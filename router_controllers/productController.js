@@ -275,7 +275,6 @@ exports.setMainImage = async (req, res, next) => {
 //     next(err);
 //   }
 // };
-// 查詢商品進階api(多功能)
 exports.getProductsByFilter = async (req, res, next) => {
   try {
     const {
@@ -284,7 +283,7 @@ exports.getProductsByFilter = async (req, res, next) => {
       start_date,
       end_date,
       category_id,
-      tags,  // 改為接收tags陣列
+      tags,
       name,
       is_active,
     } = req.query;
@@ -293,11 +292,10 @@ exports.getProductsByFilter = async (req, res, next) => {
     const params = [];
     let whereSql = 'WHERE 1';
 
-    // 日期區間查詢
+    // 日期篩選
     if (start_date && end_date) {
       const formattedStart = start_date.replace(/-/g, '');
       const formattedEnd = end_date.replace(/-/g, '');
-
       whereSql += " AND DATE_FORMAT(p.created_time, '%Y%m%d') BETWEEN ? AND ?";
       params.push(formattedStart, formattedEnd);
     }
@@ -312,17 +310,11 @@ exports.getProductsByFilter = async (req, res, next) => {
       params.push(Number(is_active));
     }
 
-    // 處理多個標籤的模糊查詢
     if (tags) {
-      // 確保tags是陣列
       const tagList = Array.isArray(tags) ? tags : [tags];
-
       if (tagList.length > 0) {
-        // 建立每個標籤的模糊查詢條件
         const tagConditions = tagList.map(() => 't.name LIKE ?').join(' OR ');
         whereSql += ` AND (${tagConditions})`;
-
-        // 將每個標籤添加到參數列表中
         tagList.forEach(tag => params.push(`%${tag}%`));
       }
     }
@@ -332,12 +324,14 @@ exports.getProductsByFilter = async (req, res, next) => {
       params.push(`%${name}%`);
     }
 
-    // 查詢語句需要用LEFT JOIN確保能找到有任一標籤匹配的產品
     const dataSql = `
-      SELECT DISTINCT p.*
+      SELECT DISTINCT
+        p.*,
+        pi.image_url AS main_image_url
       FROM products p
       LEFT JOIN product_tag pt ON p.id = pt.product_id
       LEFT JOIN tags t ON pt.tag_id = t.id
+      LEFT JOIN product_images pi ON p.id = pi.product_id AND pi.is_main = 1
       ${whereSql}
       ORDER BY p.created_time DESC
       LIMIT ? OFFSET ?
@@ -368,6 +362,7 @@ exports.getProductsByFilter = async (req, res, next) => {
     next(err);
   }
 };
+
 
 
 
