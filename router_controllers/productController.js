@@ -6,7 +6,6 @@ const fs = require("fs"); //文件
 const { imageSize } = require("image-size"); // 圖片自動偵測寬高
 
 //--------------------<<路由處理區>>-------------------------
-
 //--------------------<<增>>-------------------------
 
 //新增單一商品
@@ -204,7 +203,6 @@ exports.deleteProductImage = async (req, res, next) => {
   }
 };
 
-
 //--------------------<<修>>-------------------------
 
 //更新商品(完整資源) -- 未完成
@@ -248,36 +246,131 @@ exports.setMainImage = async (req, res, next) => {
   }
 };
 
-
 //--------------------<<查>>-------------------------
 
 //查全部商品（支援分類條件）
-exports.getAllProducts = async (req, res, next) => {
+// exports.getAllProducts = async (req, res, next) => {
+//   try {
+//     const { category } = req.query;
+
+//     let sql = `SELECT * FROM products WHERE 1`; //WHERE 1 代表一定為true
+//     const params = [];//參數
+
+//     //此段為支援分類查詢，可有可無，不影響後續
+//     if (category && !isNaN(category)) {
+//       sql += ` AND category_id = ?`; //帶入查詢參數
+//       params.push(category);
+//     }
+//     //依照「最新建立」的順序排序 (未來還可擴充)
+//     sql += ` ORDER BY created_time DESC`;
+
+//     const [rows] = await db.query(sql, params);
+
+//     if (rows.length === 0) {
+//       return res.fail("查無符合條件的商品");
+//     }
+
+//     res.success(rows, "商品查詢成功");
+//   } catch (err) {
+//     next(err);
+//   }
+// };
+// 查詢商品進階api(多功能)
+exports.getProductsByFilter = async (req, res, next) => {
   try {
-    const { category } = req.query;
+    const {
+      page = 1,
+      limit = 8,
+      start_date,
+      end_date,
+      category_id,
+      tags,  // 改為接收tags陣列
+      name,
+      is_active,
+    } = req.query;
 
-    let sql = `SELECT * FROM products WHERE 1`; //WHERE 1 代表一定為true
-    const params = [];//參數
+    const offset = (page - 1) * limit;
+    const params = [];
+    let whereSql = 'WHERE 1';
 
-    //此段為支援分類查詢，可有可無，不影響後續
-    if (category && !isNaN(category)) {
-      sql += ` AND category_id = ?`; //帶入查詢參數
-      params.push(category);
+    // 日期區間查詢
+    if (start_date && end_date) {
+      const formattedStart = start_date.replace(/-/g, '');
+      const formattedEnd = end_date.replace(/-/g, '');
+
+      whereSql += " AND DATE_FORMAT(p.created_time, '%Y%m%d') BETWEEN ? AND ?";
+      params.push(formattedStart, formattedEnd);
     }
-    //依照「最新建立」的順序排序 (未來還可擴充)
-    sql += ` ORDER BY created_time DESC`;
 
-    const [rows] = await db.query(sql, params);
-
-    if (rows.length === 0) {
-      return res.fail("查無符合條件的商品");
+    if (category_id) {
+      whereSql += ' AND p.category_id = ?';
+      params.push(category_id);
     }
 
-    res.success(rows, "商品查詢成功");
+    if (is_active !== undefined && is_active !== '') {
+      whereSql += ' AND p.is_active = ?';
+      params.push(Number(is_active));
+    }
+
+    // 處理多個標籤的模糊查詢
+    if (tags) {
+      // 確保tags是陣列
+      const tagList = Array.isArray(tags) ? tags : [tags];
+
+      if (tagList.length > 0) {
+        // 建立每個標籤的模糊查詢條件
+        const tagConditions = tagList.map(() => 't.name LIKE ?').join(' OR ');
+        whereSql += ` AND (${tagConditions})`;
+
+        // 將每個標籤添加到參數列表中
+        tagList.forEach(tag => params.push(`%${tag}%`));
+      }
+    }
+
+    if (name) {
+      whereSql += ` AND p.name LIKE ?`;
+      params.push(`%${name}%`);
+    }
+
+    // 查詢語句需要用LEFT JOIN確保能找到有任一標籤匹配的產品
+    const dataSql = `
+      SELECT DISTINCT p.*
+      FROM products p
+      LEFT JOIN product_tag pt ON p.id = pt.product_id
+      LEFT JOIN tags t ON pt.tag_id = t.id
+      ${whereSql}
+      ORDER BY p.created_time DESC
+      LIMIT ? OFFSET ?
+    `;
+
+    const countSql = `
+      SELECT COUNT(DISTINCT p.id) AS total
+      FROM products p
+      LEFT JOIN product_tag pt ON p.id = pt.product_id
+      LEFT JOIN tags t ON pt.tag_id = t.id
+      ${whereSql}
+    `;
+
+    const [dataRows] = await db.query(dataSql, [...params, Number(limit), Number(offset)]);
+    const [countRows] = await db.query(countSql, params);
+
+    res.success(
+      {
+        page: Number(page),
+        limit: Number(limit),
+        total: countRows[0].total,
+        data: dataRows,
+      },
+      '查詢成功'
+    );
   } catch (err) {
+    console.error('[getProductsByFilter Error]', err);
     next(err);
   }
 };
+
+
+
 //查單一商品-id
 exports.getProductById = async (req, res, next) => {
   try {

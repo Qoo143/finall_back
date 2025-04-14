@@ -17,7 +17,7 @@ router.delete('/:productId/images/:imageId', productsControllers.deleteProductIm
 //修
 router.put('/:productId/images/:imageId/main', productsControllers.setMainImage);//設定主圖 API
 //查
-router.get('/', productsControllers.getAllProducts);//查全部商品
+router.get('/', productsControllers.getProductsByFilter);//查商品(進階篩選API)
 router.get('/:id', productsControllers.getProductById);//查單一商品
 router.get('/:id/images', productsControllers.getProductImages);//查商品2D圖片
 router.get('/:id/model', productsControllers.getProductModel);//查商品3D模型
