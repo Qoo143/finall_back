@@ -362,22 +362,88 @@ exports.getProductsByFilter = async (req, res, next) => {
     next(err);
   }
 };
-//查單一商品-id
 exports.getProductById = async (req, res, next) => {
   try {
-    //1.利用參數解構
-    const { id } = req.params //利用參數查詢，要使用params來獲取
-    //2.判斷id
-    if (!id || isNaN(id)) { return res.fail('商品 ID 無效', 1, 400) }
-    //3.執行查詢語句
-    const sql = 'SELECT * FROM products WHERE id = ?'
-    const [rows] = await db.query(sql, [id])
-    //4.判斷回傳值
-    if (rows.length < 1) { return res.fail("查無此商品", 1, 404) }
-    //5.成功
-    res.success(rows[0], "查詢成功");
+    const { id } = req.params;
+    if (!id || isNaN(id)) return res.fail("商品 ID 無效", 1, 400);
+
+    // 1️⃣ 查詢商品主資料
+    const sqlProduct = "SELECT * FROM products WHERE id = ?";
+    const [productRows] = await db.query(sqlProduct, [id]);
+    if (productRows.length < 1) return res.fail("查無此商品", 1, 404);
+    const product = productRows[0];
+
+    // 2️⃣ 查詢分類（若有需要 label 可擴充）
+    const categoryId = product.category_id ?? null;
+
+    // 3️⃣ 查詢標籤
+    const [tagRows] = await db.query(
+      `SELECT t.id, t.name
+       FROM product_tag pt
+       JOIN tags t ON pt.tag_id = t.id
+       WHERE pt.product_id = ?`,
+      [id]
+    );
+    const tagIds = tagRows.map(t => t.id);
+    const tagNames = tagRows.map(t => t.name);
+
+    // 4️⃣ 查詢所有圖片（依 is_main DESC, sort_order ASC）
+    const [imageRows] = await db.query(
+      `SELECT image_url, is_main
+       FROM product_images
+       WHERE product_id = ?
+       ORDER BY is_main DESC, sort_order ASC, id ASC`,
+      [id]
+    );
+    const images = imageRows.map(img => ({
+      file: img.image_url,
+      isMain: !!img.is_main
+    }));
+
+    // 5️⃣ 查詢模型（目前只有 1 對 1）
+    const [modelRows] = await db.query(
+      `SELECT model_url, camera_position, camera_target
+       FROM product_models
+       WHERE product_id = ?
+       LIMIT 1`,
+      [id]
+    );
+
+    let model = null;
+    if (modelRows.length > 0) {
+      const m = modelRows[0];
+      try {
+        model = {
+          glb: m.model_url,
+          camera: {
+            position: JSON.parse(m.camera_position || '{}'),
+            target: JSON.parse(m.camera_target || '{}'),
+          },
+        };
+      } catch (err) {
+        console.warn("模型 camera JSON 解析失敗", err);
+        model = null;
+      }
+    }
+
+    // 6️⃣ 最終統整回傳格式
+    res.success({
+      basicInfo: {
+        name: product.name,
+        price: product.price,
+        stock: product.stock,
+        isListed: product.is_active === 1,
+        tagIds,
+        tagNames,
+        categoryId,
+        description: product.description || ""
+      },
+      model,
+      images
+    }, "查詢成功");
+
   } catch (err) {
-    next(err)
+    next(err);
   }
 };
 //查單一商品之圖片-id
