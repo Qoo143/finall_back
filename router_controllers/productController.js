@@ -374,7 +374,7 @@ exports.getProductById = async (req, res, next) => {
     const product = productRows[0];
 
     // 2️⃣ 查詢分類（若有需要 label 可擴充）
-    const categoryId = product.category_id ?? null;
+    const category_id = product.category_id ?? null;
 
     // 3️⃣ 查詢標籤
     const [tagRows] = await db.query(
@@ -389,15 +389,16 @@ exports.getProductById = async (req, res, next) => {
 
     // 4️⃣ 查詢所有圖片（依 is_main DESC, sort_order ASC）
     const [imageRows] = await db.query(
-      `SELECT image_url, is_main
+      `SELECT id, image_url, is_main
        FROM product_images
        WHERE product_id = ?
        ORDER BY is_main DESC, sort_order ASC, id ASC`,
       [id]
     );
     const images = imageRows.map(img => ({
-      file: img.image_url,
-      isMain: !!img.is_main
+      id: img.id,
+      image_url: img.image_url,
+      is_main: !!img.is_main
     }));
 
     // 5️⃣ 查詢模型（目前只有 1 對 1）
@@ -429,13 +430,14 @@ exports.getProductById = async (req, res, next) => {
     // 6️⃣ 最終統整回傳格式
     res.success({
       basicInfo: {
+        id: product.id,
         name: product.name,
         price: product.price,
         stock: product.stock,
-        isListed: product.is_active === 1,
+        is_active: product.is_active === 1,
         tagIds,
         tagNames,
-        categoryId,
+        category_id,
         description: product.description || ""
       },
       model,
