@@ -205,9 +205,174 @@ exports.deleteProductImage = async (req, res, next) => {
 
 //--------------------<<修>>-------------------------
 
-//更新商品(完整資源) -- 未完成
+//更新商品(完整資源) 
 exports.updateProductById = async (req, res, next) => {
-}
+  try {
+    const { id } = req.params;
+    if (!id || isNaN(id)) return res.fail("商品 ID 無效", 1, 400);
+    
+    // 1. 獲取基本資料
+    const { 
+      name, 
+      price, 
+      stock, 
+      is_active, 
+      category_id, 
+      description,
+      existing_image_ids,
+      deleted_image_ids,
+      tag_ids 
+    } = req.body;
+    
+    // 2. 驗證必填欄位
+    if (!name || price === undefined || stock === undefined) {
+      return res.fail("缺少必要欄位", 1);
+    }
+    
+    // 3. 更新商品基本資料
+    const date = new Date();
+    const updateSql = `
+      UPDATE products 
+      SET name = ?, description = ?, price = ?, stock = ?, 
+          is_active = ?, category_id = ?, update_time = ?
+      WHERE id = ?
+    `;
+    
+    await db.query(updateSql, [
+      name,
+      description || null,
+      price,
+      stock,
+      Number(is_active) || 0,
+      category_id || null,
+      date,
+      id
+    ]);
+    
+    // 4. 處理標籤
+    if (tag_ids && Array.isArray(tag_ids)) {
+      // 先刪除現有的標籤關聯
+      await db.query('DELETE FROM product_tag WHERE product_id = ?', [id]);
+      
+      // 添加新的標籤關聯
+      const tagInsertPromises = tag_ids.map(tagId => {
+        const sql = `
+          INSERT INTO product_tag (product_id, tag_id, created_time, update_time)
+          VALUES (?, ?, ?, ?)
+        `;
+        return db.query(sql, [id, tagId, date, date]);
+      });
+      
+      await Promise.all(tagInsertPromises);
+    }
+    
+    // 5. 處理圖片
+    // 5.1 處理要刪除的圖片
+    if (deleted_image_ids) {
+      const imageIdsToDelete = JSON.parse(deleted_image_ids);
+      if (Array.isArray(imageIdsToDelete) && imageIdsToDelete.length > 0) {
+        // 先獲取圖片路徑，以便刪除實體檔案
+        const [imagesToDelete] = await db.query(
+          'SELECT image_url FROM product_images WHERE id IN (?) AND product_id = ?',
+          [imageIdsToDelete, id]
+        );
+        
+        // 刪除資料庫記錄
+        await db.query(
+          'DELETE FROM product_images WHERE id IN (?) AND product_id = ?',
+          [imageIdsToDelete, id]
+        );
+        
+        // 刪除實體檔案
+        imagesToDelete.forEach(img => {
+          const filePath = path.join(__dirname, '../public', img.image_url);
+          try {
+            fs.unlinkSync(filePath);
+          } catch (err) {
+            console.warn(`刪除檔案失敗: ${filePath}`, err);
+          }
+        });
+      }
+    }
+    
+    // 5.2 更新現有圖片的狀態（主要是 is_main）
+    if (existing_image_ids) {
+      const existingImages = JSON.parse(existing_image_ids);
+      if (Array.isArray(existingImages) && existingImages.length > 0) {
+        // 先重置所有圖片的 is_main 狀態
+        await db.query(
+          'UPDATE product_images SET is_main = 0 WHERE product_id = ?',
+          [id]
+        );
+        
+        // 更新指定為主圖的圖片
+        const mainImage = existingImages.find(img => img.is_main === 1);
+        if (mainImage) {
+          await db.query(
+            'UPDATE product_images SET is_main = 1 WHERE id = ? AND product_id = ?',
+            [mainImage.id, id]
+          );
+        }
+      }
+    }
+    
+    // 5.3 處理新上傳的圖片
+    if (req.files && req.files.length > 0) {
+      const uploadedImages = [];
+      
+      // 從 body 中獲取每張圖片的 is_main 狀態
+      const isMainFlags = req.body.new_images_is_main || [];
+      
+      for (let i = 0; i < req.files.length; i++) {
+        const file = req.files[i];
+        const isMain = isMainFlags[i] === '1';
+        
+        const ext = path.extname(file.originalname);
+        const newFilename = `${file.filename}${ext}`;
+        const newPath = path.join(__dirname, "../public/upload/images", newFilename);
+        fs.renameSync(file.path, newPath);
+        
+        const imageUrl = `/upload/images/${newFilename}`;
+        
+        // 如果這是設置為主圖的新圖片，先重置其他圖片的主圖狀態
+        if (isMain) {
+          await db.query(
+            'UPDATE product_images SET is_main = 0 WHERE product_id = ?',
+            [id]
+          );
+        }
+        
+        // 插入新圖片記錄
+        const sql = `
+          INSERT INTO product_images 
+          (product_id, image_url, is_main, sort_order, created_time, update_time)
+          VALUES (?, ?, ?, 0, ?, ?)
+        `;
+        
+        const [result] = await db.query(sql, [
+          id, 
+          imageUrl, 
+          isMain ? 1 : 0, 
+          date, 
+          date
+        ]);
+        
+        uploadedImages.push({
+          id: result.insertId,
+          image_url: imageUrl,
+          is_main: isMain
+        });
+      }
+    }
+    
+    // 6. 處理 3D 模型（如果需要）
+    // 這部分可以後續實現
+    
+    res.success(null, "商品更新成功");
+  } catch (err) {
+    next(err);
+  }
+};
 //設定主圖API
 exports.setMainImage = async (req, res, next) => {
   try {
@@ -397,7 +562,7 @@ exports.getProductById = async (req, res, next) => {
     );
     const images = imageRows.map(img => ({
       id: img.id,
-      image_url: img.image_url,
+      file: img.image_url,
       is_main: !!img.is_main
     }));
 
