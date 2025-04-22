@@ -33,7 +33,7 @@ app.use(responseHelper);//'成功與錯誤自訂'中間鍵
 app.use("/api", loginRoutes); //登入註冊模組
 app.use('/products', productRoutes)//產品管理模組
 app.use('/api/products', productTagRouter)//標籤模組
-app.use('/tag', tagRouter)//標籤模組
+app.use('/tags', tagRouter)//標籤模組
 app.use('/categories', productCategoryRouter)//標籤模組
 
 //全局捕捉錯誤

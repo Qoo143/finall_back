@@ -1,7 +1,7 @@
 const db = require('../db/index')
 
 // 建立新標籤
-exports.createTag = async (req, res) => {
+exports.createTag = async (req, res, next) => {
   const { name, description = '' } = req.body
   if (!name) return res.fail('標籤名稱為必填')
 
@@ -28,6 +28,48 @@ exports.createTag = async (req, res) => {
     res.fail(err)
   }
 }
+// 批次新增標籤
+exports.createTagsInBatch = async (req, res, next) => {
+  try {
+    const names = req.body.names || []; //前端會傳["新的","標籤"]
+
+    if (!Array.isArray(names) || names.length === 0) {
+      return res.fail('標籤名稱不得為空');
+    }
+
+    // 過濾空白與重複
+    const uniqueNames = [...new Set(names.map(n => n.trim()).filter(Boolean))];
+
+    if (uniqueNames.length === 0) {
+      return res.fail('沒有有效的標籤名稱');
+    }
+
+    // 查出已存在的標籤
+    const [existingRows] = await db.query(
+      'SELECT id, name FROM tags WHERE name IN (?)',
+      [uniqueNames]
+    );
+
+    const existingNames = existingRows.map(tag => tag.name);
+    const newNames = uniqueNames.filter(name => !existingNames.includes(name));
+
+    // 插入新的標籤（用多筆插入）
+    if (newNames.length > 0) {
+      const values = newNames.map(name => [name]);
+      await db.query('INSERT INTO tags (name) VALUES ?', [values]);
+    }
+
+    // 查出所有對應的標籤（包含新加的）
+    const [finalRows] = await db.query(
+      'SELECT id, name FROM tags WHERE name IN (?)',
+      [uniqueNames]
+    );
+
+    res.success(finalRows);
+  } catch (err) {
+    next(err)
+  }
+};
 
 
 // ✅ 取得所有標籤
