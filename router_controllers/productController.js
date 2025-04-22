@@ -107,7 +107,7 @@ exports.updateProductById = async (req, res, next) => {
     for (const tagId of tagIds) {
       await db.query(`
         INSERT INTO product_tag (product_id, tag_id, created_time, update_time) 
-        VALUES (?, ?, ?, ?)`, [id, tagId, now, now]);
+        VALUES (?, ?, ?, ?)`, [id, tagId, date, date]);
     }
 
     // ========= 4. 處理圖片 =========
@@ -170,7 +170,7 @@ exports.updateProductById = async (req, res, next) => {
         await db.query(`
           INSERT INTO product_images (product_id, image_url, is_main, created_time, update_time) 
           VALUES (?, ?, ?, ?, ?)`,
-          [id, imageUrl, img.is_main ? 1 : 0, now, now]
+          [id, imageUrl, img.is_main ? 1 : 0, date, date]
         );
       } else if (img.id) {
         // 舊圖片只更新主圖狀態
