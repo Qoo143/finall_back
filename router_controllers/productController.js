@@ -64,15 +64,14 @@ exports.deleteProductById = async (req, res, next) => {
 };
 
 //--------------------<<修>>-------------------------
-
-//更新商品(完整資源) 
+/**
+ *  更新商品(完整資源) 
+ */
 exports.updateProductById = async (req, res, next) => {
   try {
     const { id } = req.params;
 
     // ========= 1. 接收並驗證基本欄位 =========
-    console.log(req.body);
-
     const {
       name, price, stock, is_active, category_id, description
     } = req.body;
@@ -315,7 +314,7 @@ exports.getProductById = async (req, res, next) => {
     const images = imageRows.map(img => ({
       id: img.id,
       file: img.image_url,
-      is_main: !!img.is_main
+      is_main: img.is_main
     }));
 
     // 5️⃣ 查詢模型（目前只有 1 對 1）
@@ -350,7 +349,7 @@ exports.getProductById = async (req, res, next) => {
       name: product.name,
       price: product.price,
       stock: product.stock,
-      is_active: product.is_active === 1,
+      is_active: product.is_active,
       tagIds,
       tagNames,
       category_id,
