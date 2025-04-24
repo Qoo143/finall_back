@@ -117,9 +117,63 @@ exports.updateProductById = async (req, res, next) => {
           VALUES (?, ?, ?, ?)`, [id, tagId, date, date]);
       }
     }
-    // ========= 4. 處理圖片 =========
+
+
+
+    // ========= 4. 處理模型文件 =========
+    // 
+    const modelFile = req.files?.find(file => file.fieldname === 'model');
+    const shouldDeleteModel = req.body.delete_model === '1';
+
+    try {
+      if (modelFile) {
+        // 1. 上傳新模型文件
+        // 確保目錄存在
+        const modelDir = path.join(__dirname, "../public/upload/models");
+        if (!fs.existsSync(modelDir)) {
+          fs.mkdirSync(modelDir, { recursive: true });
+        }
+
+        // 處理文件名和路徑
+        const ext = path.extname(modelFile.originalname);
+        const newFilename = `${modelFile.filename}${ext}`;
+        const savePath = path.join(modelDir, newFilename);
+        const modelUrl = `/upload/models/${newFilename}`;
+
+        // 移動文件
+        fs.renameSync(modelFile.path, savePath);
+
+        // 更新數據庫
+        await db.query("UPDATE products SET model_url = ? WHERE id = ?", [modelUrl, id]);
+        console.log("新模型已上傳:", modelUrl);
+
+      } else if (shouldDeleteModel) {
+        // 2. 刪除舊模型
+        // 先查詢舊模型URL
+        const [oldModel] = await db.query("SELECT model_url FROM products WHERE id = ?", [id]);
+        const oldModelUrl = oldModel[0]?.model_url;
+
+        if (oldModelUrl) {
+          // 嘗試刪除舊文件
+          const oldFilePath = path.join(__dirname, "../public", oldModelUrl.startsWith('/') ? oldModelUrl.substring(1) : oldModelUrl);
+
+          if (fs.existsSync(oldFilePath)) {
+            fs.unlinkSync(oldFilePath);
+            console.log("已刪除舊模型文件:", oldFilePath);
+          }
+        }
+
+        // 更新數據庫，清空model_url
+        await db.query("UPDATE products SET model_url = NULL WHERE id = ?", [id]);
+        console.log("已清除模型URL");
+      }
+      // 3. 如果兩者都沒有，保持不變
+    } catch (err) {
+      console.error("處理模型文件時出錯:", err);
+    }
+    // ========= 5. 處理圖片 =========
     /**
-    *   4-1. 刪除圖片資料與檔案 
+    *   5-1. 刪除圖片資料與檔案 
     */
     //先將formData資料格式若正確可以直接轉陣列
     // 修改後的代碼
@@ -188,7 +242,7 @@ exports.updateProductById = async (req, res, next) => {
 
     // 創建一個映射表，用於查找每個文件的主圖狀態
     const fileIsMainMap = new Map();
-    
+
     // 如果有上傳新文件，且提供了相應的 is_main 值
     if (imageFiles.length > 0 && imageIsMains.length >= imageIds.length) {
       // 計算新文件對應的索引位置
@@ -316,12 +370,12 @@ exports.updateProductById = async (req, res, next) => {
     }
 
     console.log("圖片處理完成 - 成功:", processedCount, "張, 失敗:", errorCount, "張");
-    
+
     // 最後確認：如果商品沒有任何主圖，則設置第一張圖片為主圖
     const [checkMain] = await db.query(`
       SELECT COUNT(*) AS count FROM product_images 
       WHERE product_id = ? AND is_main = 1`, [id]);
-    
+
     if (checkMain[0].count === 0) {
       console.log("最終檢查：商品仍無主圖，設置第一張為主圖");
       await db.query(`
@@ -331,7 +385,7 @@ exports.updateProductById = async (req, res, next) => {
         ORDER BY id ASC 
         LIMIT 1`, [id]);
     }
-    
+
     // ========= 成功回傳 =========
     res.success({ id }, "商品更新成功");
   } catch (err) {
