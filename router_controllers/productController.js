@@ -70,6 +70,7 @@ exports.deleteProductById = async (req, res, next) => {
 exports.updateProductById = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const date = new Date();
 
     // ========= 1. 接收並驗證基本欄位 =========
     const {
@@ -83,8 +84,6 @@ exports.updateProductById = async (req, res, next) => {
     if (!name || price === undefined || stock === undefined) {
       return res.fail("缺少必要欄位");
     }
-
-    const date = new Date();
 
     // ========= 2. 更新基本資料 =========
     await db.query(`
@@ -125,6 +124,7 @@ exports.updateProductById = async (req, res, next) => {
     //先將formData資料格式若正確可以直接轉陣列
     // 修改後的代碼
     let deletedIds = req.body.deleted_image_ids || req.body['deleted_image_ids[]'] || [];
+    console.log("確認刪除陣列", deletedIds);
 
     // 確保 deletedIds 是陣列
     if (!Array.isArray(deletedIds)) {
@@ -136,7 +136,6 @@ exports.updateProductById = async (req, res, next) => {
     // 只有當有要刪除的圖片時才執行
     if (deletedIds.length > 0) {
       // 先找出要刪除的圖片路徑 他會回傳陣列
-
       const [toDelete] = await db.query(`
         SELECT image_url FROM product_images 
         WHERE id IN (?) AND product_id = ?`, [deletedIds, id]);
@@ -150,8 +149,9 @@ exports.updateProductById = async (req, res, next) => {
       // 遍歷剛剛查出來的圖片資訊
       // 刪除檔案系統中的檔案
       for (const img of toDelete) {
-        //好好處理圖片路徑
+        //清除後端資料庫url開鈄起始/
         const imagePath = img.image_url.startsWith('/') ? img.image_url.substring(1) : img.image_url;
+        //相對路徑轉絕對路徑
         const filePath = path.join(__dirname, "../public", imagePath);
         if (fs.existsSync(filePath)) {
           fs.unlink(filePath, err => {
@@ -162,12 +162,6 @@ exports.updateProductById = async (req, res, next) => {
         }
       }
     }
-
-    /**
-    *    4-2. 重建圖片清單（新圖 + 舊圖主圖設定） =========
-    */
-
-    // 4-2. 重建圖片清單（新圖 + 舊圖主圖設定）
 
     // 確保 upload/images 目錄存在
     const uploadDir = path.join(__dirname, "../public/upload/images");
@@ -181,28 +175,58 @@ exports.updateProductById = async (req, res, next) => {
     const imageFiles = req.files || []; // 獲取所有上傳的文件
     console.log("文件總數:", imageFiles.length);
 
-    // 解析 is_main 和 id 設置
-    const imageIds = Array.isArray(req.body.image_id) ? req.body.image_id : [req.body.image_id].filter(Boolean);
-    const imageIsMains = Array.isArray(req.body.image_is_main) ? req.body.image_is_main : [req.body.image_is_main].filter(Boolean);
+    // 解析 is_main 和 id 設置 - 支持多種可能的參數名稱格式
+    let imageIds = req.body.image_id || req.body['image_id[]'] || [];
+    let imageIsMains = req.body.image_is_main || req.body['image_is_main[]'] || [];
+
+    // 確保是陣列
+    if (!Array.isArray(imageIds)) imageIds = [imageIds].filter(Boolean);
+    if (!Array.isArray(imageIsMains)) imageIsMains = [imageIsMains].filter(Boolean);
 
     console.log("圖片 ID 列表:", imageIds);
     console.log("圖片 is_main 列表:", imageIsMains);
 
+    // 創建一個映射表，用於查找每個文件的主圖狀態
+    const fileIsMainMap = new Map();
+    
+    // 如果有上傳新文件，且提供了相應的 is_main 值
+    if (imageFiles.length > 0 && imageIsMains.length >= imageIds.length) {
+      // 計算新文件對應的索引位置
+      const startIndex = imageIds.length - imageFiles.length;
+      for (let i = 0; i < imageFiles.length; i++) {
+        const fileIndex = startIndex + i;
+        // 確保索引在範圍內
+        if (fileIndex >= 0 && fileIndex < imageIsMains.length) {
+          fileIsMainMap.set(imageFiles[i].filename, Number(imageIsMains[fileIndex]));
+        }
+      }
+    }
+
+    console.log("文件主圖映射表:", Array.from(fileIsMainMap.entries()));
+
     // 構建圖片元數據列表
     const imageMetaList = [];
 
-    // 將上傳的文件映射到元數據
-    for (let i = 0; i < Math.max(imageIds.length, imageFiles.length); i++) {
-      const hasId = i < imageIds.length;
-      const hasFile = i < imageFiles.length;
-
-      if (hasId || hasFile) {
+    // 先處理已有圖片
+    for (let i = 0; i < imageIds.length; i++) {
+      const id = Number(imageIds[i]);
+      if (id > 0) { // 只處理有效ID的現有圖片
         imageMetaList.push({
-          id: hasId ? Number(imageIds[i]) : 0,
-          is_main: hasId && i < imageIsMains.length ? Number(imageIsMains[i]) : 0,
-          file: hasFile ? imageFiles[i] : null
+          id: id,
+          is_main: i < imageIsMains.length ? Number(imageIsMains[i]) : 0,
+          file: null
         });
       }
+    }
+
+    // 再處理新上傳的圖片
+    for (const file of imageFiles) {
+      const isMain = fileIsMainMap.get(file.filename) || 0;
+      imageMetaList.push({
+        id: 0,
+        is_main: isMain,
+        file: file
+      });
     }
 
     console.log("構建的圖片列表:", imageMetaList.map(img => ({
@@ -211,7 +235,17 @@ exports.updateProductById = async (req, res, next) => {
       hasFile: !!img.file
     })));
 
-    // 清除所有主圖標記
+    // 檢查是否至少有一張圖片被設為主圖
+    const hasMainImage = imageMetaList.some(img => img.is_main === 1);
+    console.log("是否有設定主圖:", hasMainImage);
+
+    // 如果沒有主圖，且有圖片，則將第一張圖片設為主圖
+    if (!hasMainImage && imageMetaList.length > 0) {
+      imageMetaList[0].is_main = 1;
+      console.log("未設置主圖，將第一張圖片設為主圖");
+    }
+
+    // 清除所有主圖標記 - 只針對當前商品
     await db.query("UPDATE product_images SET is_main = 0 WHERE product_id = ?", [id]);
     console.log("已清除商品 ID", id, "的所有主圖標記");
 
@@ -234,6 +268,7 @@ exports.updateProductById = async (req, res, next) => {
           console.log("- 臨時路徑:", img.file.path);
           console.log("- 目標路徑:", savePath);
           console.log("- 數據庫URL:", imageUrl);
+          console.log("- is_main 值:", img.is_main);  // 記錄 is_main 值
 
           // 檢查源文件是否存在
           if (!fs.existsSync(img.file.path)) {
@@ -248,12 +283,12 @@ exports.updateProductById = async (req, res, next) => {
 
           // 插入新圖片記錄
           const [insertResult] = await db.query(`
-        INSERT INTO product_images (product_id, image_url, is_main, created_time, update_time)
-        VALUES (?, ?, ?, ?, ?)`,
+            INSERT INTO product_images (product_id, image_url, is_main, created_time, update_time)
+            VALUES (?, ?, ?, ?, ?)`,
             [id, imageUrl, img.is_main, date, date]
           );
 
-          console.log("圖片記錄插入成功, ID:", insertResult.insertId);
+          console.log("圖片記錄插入成功, ID:", insertResult.insertId, "is_main:", img.is_main);
           processedCount++;
 
         } else if (img.id > 0) {
@@ -261,9 +296,9 @@ exports.updateProductById = async (req, res, next) => {
           console.log("更新舊圖片:", img.id, "主圖狀態:", img.is_main);
 
           const [updateResult] = await db.query(`
-        UPDATE product_images
-        SET is_main = ?, update_time = ?
-        WHERE id = ? AND product_id = ?`,
+            UPDATE product_images
+            SET is_main = ?, update_time = ?
+            WHERE id = ? AND product_id = ?`,
             [img.is_main, date, img.id, id]
           );
 
@@ -281,6 +316,22 @@ exports.updateProductById = async (req, res, next) => {
     }
 
     console.log("圖片處理完成 - 成功:", processedCount, "張, 失敗:", errorCount, "張");
+    
+    // 最後確認：如果商品沒有任何主圖，則設置第一張圖片為主圖
+    const [checkMain] = await db.query(`
+      SELECT COUNT(*) AS count FROM product_images 
+      WHERE product_id = ? AND is_main = 1`, [id]);
+    
+    if (checkMain[0].count === 0) {
+      console.log("最終檢查：商品仍無主圖，設置第一張為主圖");
+      await db.query(`
+        UPDATE product_images 
+        SET is_main = 1 
+        WHERE product_id = ? 
+        ORDER BY id ASC 
+        LIMIT 1`, [id]);
+    }
+    
     // ========= 成功回傳 =========
     res.success({ id }, "商品更新成功");
   } catch (err) {
