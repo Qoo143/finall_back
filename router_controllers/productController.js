@@ -489,7 +489,7 @@ exports.getProductById = async (req, res, next) => {
     const { id } = req.params;
     if (!id || isNaN(id)) return res.fail("商品 ID 無效", 1, 400);
 
-    // 1️⃣ 查詢商品主資料
+    // 1️⃣ 查詢商品主資料（包含model_url）
     const sqlProduct = "SELECT * FROM products WHERE id = ?";
     const [productRows] = await db.query(sqlProduct, [id]);
     if (productRows.length < 1) return res.fail("查無此商品", 1, 404);
@@ -523,33 +523,7 @@ exports.getProductById = async (req, res, next) => {
       is_main: img.is_main
     }));
 
-    // 5️⃣ 查詢模型（目前只有 1 對 1）
-    const [modelRows] = await db.query(
-      `SELECT model_url, camera_position, camera_target
-       FROM product_models
-       WHERE product_id = ?
-       LIMIT 1`,
-      [id]
-    );
-
-    let model = null;
-    if (modelRows.length > 0) {
-      const m = modelRows[0];
-      try {
-        model = {
-          glb: m.model_url,
-          camera: {
-            position: JSON.parse(m.camera_position || '{}'),
-            target: JSON.parse(m.camera_target || '{}'),
-          },
-        };
-      } catch (err) {
-        console.warn("模型 camera JSON 解析失敗", err);
-        model = null;
-      }
-    }
-
-    // 6️⃣ 最終統整回傳格式
+    // 5️⃣ 最終統整回傳格式
     res.success({
       id: product.id,
       name: product.name,
@@ -560,7 +534,7 @@ exports.getProductById = async (req, res, next) => {
       tagNames,
       category_id,
       description: product.description || "",
-      model,
+      model_url: product.model_url, // 直接使用products表中的model_url
       images
     }, "查詢成功");
 

@@ -10,7 +10,7 @@ const ALLOWED_IMAGE_TYPES = [
   'model/gltf-binary',  // GLB 模型的標準 MIME 類型
   'application/octet-stream'  // 有時 GLB 檔案會被識別為這個通用型別
 ]
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_FILE_SIZE = 40 * 1024 * 1024; // 40MB
 
 // 文件存儲配置
 const storage = multer.diskStorage({
