@@ -1,9 +1,16 @@
 const multer = require("multer");
 const path = require("path");
 
-// 允許的圖片類型
-const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+// 允許的類型
+const ALLOWED_IMAGE_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'model/gltf-binary',  // GLB 模型的標準 MIME 類型
+  'application/octet-stream'  // 有時 GLB 檔案會被識別為這個通用型別
+]
+const MAX_FILE_SIZE = 40 * 1024 * 1024; // 40MB
 
 // 文件存儲配置
 const storage = multer.diskStorage({
@@ -20,15 +27,16 @@ const storage = multer.diskStorage({
 
 // 文件過濾器
 const fileFilter = (req, file, cb) => {
+  console.log("收到上傳檔案:", file.mimetype); // 建議加這行 debug
   if (ALLOWED_IMAGE_TYPES.includes(file.mimetype)) {
     cb(null, true); // 接受文件
   } else {
-    cb(new Error('只允許上傳 JPG, PNG, GIF, WEBP 格式的圖片'), false); // 拒絕文件
+    cb(new Error('只允許上傳 JPG, PNG, GIF, WEBP 格式的圖片與 glb 模型'), false); // 拒絕文件
   }
 };
 
 // 配置 multer
-const upload = multer({ 
+const upload = multer({
   storage,
   limits: { fileSize: MAX_FILE_SIZE },
   fileFilter,
