@@ -8,7 +8,7 @@ const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 // 文件存儲配置
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, path.join(__dirname, "../temp")); // 暫存目錄
+    cb(null, path.join(__dirname, "../public/upload/images")); // 暫存目錄
   },
   filename: function (req, file, cb) {
     // 生成唯一文件名

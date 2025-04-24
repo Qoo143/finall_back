@@ -378,6 +378,7 @@ exports.getProductsByFilter = async (req, res, next) => {
     next(err);
   }
 };
+//查單一商品byId
 exports.getProductById = async (req, res, next) => {
   try {
     const { id } = req.params;
