@@ -28,6 +28,7 @@ exports.createTag = async (req, res, next) => {
     res.fail(err)
   }
 }
+
 // 批次新增標籤
 exports.createTagsInBatch = async (req, res, next) => {
   try {
@@ -53,10 +54,11 @@ exports.createTagsInBatch = async (req, res, next) => {
     const existingNames = existingRows.map(tag => tag.name);
     const newNames = uniqueNames.filter(name => !existingNames.includes(name));
 
-    // 插入新的標籤（用多筆插入）
+    // 插入新的標籤（用多筆插入）- 加入創建時間和更新時間
     if (newNames.length > 0) {
-      const values = newNames.map(name => [name]);
-      await db.query('INSERT INTO tags (name) VALUES ?', [values]);
+      const date = new Date();
+      const values = newNames.map(name => [name, '', date, date]); // 加入空描述和時間
+      await db.query('INSERT INTO tags (name, description, created_time, update_time) VALUES ?', [values]);
     }
 
     // 查出所有對應的標籤（包含新加的）
@@ -70,7 +72,6 @@ exports.createTagsInBatch = async (req, res, next) => {
     next(err)
   }
 };
-
 
 // ✅ 取得所有標籤
 exports.getAllTags = async (req, res) => {
@@ -112,15 +113,29 @@ exports.updateTag = async (req, res) => {
   }
 }
 
-
 // ✅ 刪除指定標籤
 exports.deleteTag = async (req, res) => {
   const id = req.params.id
+
   try {
-    const sql = `DELETE FROM tags WHERE id = ?`
-    await db.query(sql, [id])
-    res.success(null, '標籤已刪除')
+    // 先開始一個事務
+    await db.query('START TRANSACTION');
+
+    // 先刪除關聯表中的數據
+    const deleteRelationSql = `DELETE FROM product_tag WHERE tag_id = ?`;
+    await db.query(deleteRelationSql, [id]);
+
+    // 再刪除標籤本身
+    const deleteTagSql = `DELETE FROM tags WHERE id = ?`;
+    await db.query(deleteTagSql, [id]);
+
+    // 提交事務
+    await db.query('COMMIT');
+
+    res.success(null, '標籤已刪除');
   } catch (err) {
-    res.fail(err)
+    // 發生錯誤時回滾事務
+    await db.query('ROLLBACK');
+    res.fail(err);
   }
-}
+};

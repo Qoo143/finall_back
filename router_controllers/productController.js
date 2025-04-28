@@ -9,41 +9,176 @@ const upload = require('../middleware/upload');//multer實例
 //--------------------<<路由處理區>>-------------------------
 //--------------------<<增>>-------------------------
 
-//新增單一商品
+/**
+ *  新增單一商品(完整版)
+ */
 exports.createProduct = async (req, res, next) => {
   try {
-    const { name, description, price, stock, is_active, category_id } = req.body;
+    console.log("收到的請求體:", req.body);
+    console.log("收到的檔案:", req.files);
 
-    // 檢查非空
-    if (!name || price === undefined || stock === undefined || is_active === undefined || category_id === undefined) {
-      return res.fail("缺少必要欄位", 1);
+    // 1. 提取並驗證基本商品信息
+    const {
+      name,
+      price,
+      stock,
+      is_active = 0,
+      category_id = 1,
+      description = null,
+      tagIds = []
+    } = req.body;
+
+    // 檢查必填字段
+    if (!name || price === undefined || stock === undefined) {
+      return res.fail("缺少必要欄位 (名稱、價格或庫存)", 1);
     }
+
+    const date = new Date();
+
+    // 2. 插入商品基本信息
     const sql = `
-      INSERT INTO products (name, description, price, stock, is_active, category_id, created_time, update_time)
+      INSERT INTO products (
+        name, description, price, stock, is_active, 
+        category_id, created_time, update_time
+      )
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
-    const date = new Date()
     const [result] = await db.query(sql, [
       name,
-      description || null,
+      description,
       price,
       stock,
-      Number(is_active) || 0,
+      Number(is_active),
       category_id,
       date,
       date
     ]);
 
-    res.success(result, "新增商品成功");
+    const productId = result.insertId;
+
+    // 3. 處理標籤關聯
+    // 確保 tagIds 是數組
+    let parsedTagIds = tagIds;
+    if (!Array.isArray(parsedTagIds)) {
+      try {
+        // 嘗試解析 JSON 字符串
+        parsedTagIds = JSON.parse(parsedTagIds);
+      } catch {
+        // 如果無法解析，可能是單一值或空
+        parsedTagIds = parsedTagIds ? [parsedTagIds] : [];
+      }
+    }
+
+    // 過濾有效的標籤 ID
+    const validTagIds = parsedTagIds
+      .map(id => Number(id))
+      .filter(id => !isNaN(id));
+
+    if (validTagIds.length > 0) {
+      // 批量插入標籤關聯
+      const tagInsertPromises = validTagIds.map(tagId => {
+        return db.query(
+          `INSERT INTO product_tag (product_id, tag_id, created_time, update_time) 
+           VALUES (?, ?, ?, ?)`,
+          [productId, tagId, date, date]
+        );
+      });
+
+      await Promise.all(tagInsertPromises);
+    }
+
+    // 4. 處理圖片上傳
+    const imageFiles = req.files?.filter(file =>
+      file.fieldname === 'images[]' || file.fieldname === 'images'
+    ) || [];
+
+    const imageInsertPromises = [];
+
+    if (imageFiles.length > 0) {
+      // 確保上傳目錄存在
+      const uploadDir = path.join(__dirname, "../public/upload/images");
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+
+      // 獲取主圖設置
+      let imageMainFlags = req.body['image_is_main[]'] || req.body.image_is_main || [];
+      if (!Array.isArray(imageMainFlags)) {
+        imageMainFlags = [imageMainFlags];
+      }
+
+      // 處理每個圖片
+      for (let i = 0; i < imageFiles.length; i++) {
+        const file = imageFiles[i];
+        const isMain = i < imageMainFlags.length ?
+          Number(imageMainFlags[i]) :
+          (i === 0 ? 1 : 0); // 如果沒有明確指定，第一張為主圖
+
+        // 處理文件名和路徑
+        const ext = path.extname(file.originalname);
+        const newFilename = `${file.filename}${ext}`;
+        const savePath = path.join(uploadDir, newFilename);
+        const imageUrl = `/upload/images/${newFilename}`;
+
+        // 移動文件
+        fs.renameSync(file.path, savePath);
+
+        // 準備插入數據庫
+        imageInsertPromises.push(
+          db.query(
+            `INSERT INTO product_images (
+              product_id, image_url, is_main, sort_order, created_time, update_time
+            ) VALUES (?, ?, ?, ?, ?, ?)`,
+            [productId, imageUrl, isMain, i, date, date]
+          )
+        );
+      }
+
+      if (imageInsertPromises.length > 0) {
+        await Promise.all(imageInsertPromises);
+      }
+    }
+
+    // 5. 處理模型文件上傳 (如果有)
+    const modelFile = req.files?.find(file => file.fieldname === 'model');
+    if (modelFile) {
+      // 確保模型目錄存在
+      const modelDir = path.join(__dirname, "../public/upload/models");
+      if (!fs.existsSync(modelDir)) {
+        fs.mkdirSync(modelDir, { recursive: true });
+      }
+
+      // 處理文件名和路徑
+      const ext = path.extname(modelFile.originalname);
+      const newFilename = `${modelFile.filename}${ext}`;
+      const savePath = path.join(modelDir, newFilename);
+      const modelUrl = `/upload/models/${newFilename}`;
+
+      // 移動文件
+      fs.renameSync(modelFile.path, savePath);
+
+      // 更新商品的 model_url
+      await db.query(
+        "UPDATE products SET model_url = ? WHERE id = ?",
+        [modelUrl, productId]
+      );
+    }
+
+    // 6. 返回成功消息和新創建的商品 ID
+    res.success({ id: productId }, "商品創建成功");
+
   } catch (err) {
-    next(err); // 丟給全局錯誤處理
+    console.error("創建商品錯誤:", err);
+    next(err);
   }
-}
+};
 
 //--------------------<<刪>>-------------------------
 
-//刪除單一商品
+/**
+ *  刪除單一商品
+ */
 exports.deleteProductById = async (req, res, next) => {
   try {
     //1.參數解構

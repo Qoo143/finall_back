@@ -100,6 +100,13 @@ exports.deleteCategory = async (req, res, next) => {
   const { id } = req.params;
 
   try {
+
+    // 檢查是否為不可刪除的特殊分類
+    if (id == 1) {
+      return res.fail("「未指定」為系統預設分類，不可刪除");
+    }
+
+    // 檢查是否有子分類
     const [checkChild] = await db.query(
       'SELECT COUNT(*) AS count FROM product_category WHERE parent_id = ?',
       [id]
