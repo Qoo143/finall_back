@@ -15,26 +15,28 @@ const productRoutes = require("./router/product");//商品模組
 const productTagRouter = require('./router/productTag')//標籤模組
 const tagRouter = require('./router/tag')//標籤模組
 const productCategoryRouter = require('./router/productCategory')//分類模組
+const cartRoutes = require('./router/cart');//購物車模組
 
 
 //--------------------<<中間鍵區>>-------------------------
 
 //全局中間鍵
-app.use(cors()); //跨域
-app.use(express.static("public")); //靜態資源 (存放在public)
-app.use(express.json()); //json
-app.use(express.urlencoded({ extended: true })); //url
+app.use(cors()) //跨域
+  .use(express.static("public")) //靜態資源 (存放在public)
+  .use(express.json()) //json
+  .use(express.urlencoded({ extended: true })); //url
 
 
 //自訂中間鍵
 app.use(responseHelper);//'成功與錯誤自訂'中間鍵
 
 //路由中間鍵 
-app.use("/api", loginRoutes); //登入註冊模組
-app.use('/products', productRoutes)//產品管理模組
-app.use('/api/products', productTagRouter)//標籤模組
-app.use('/tags', tagRouter)//標籤模組
-app.use('/categories', productCategoryRouter)//標籤模組
+app.use("/api", loginRoutes) //登入註冊模組
+  .use('/api/cart', cartRoutes) // 新增購物車路由
+  .use('/products', productRoutes)//產品管理模組
+  .use('/categories', productCategoryRouter)//分類模組
+  .use('/tags', tagRouter)//標籤模組
+  .use('/api/products', productTagRouter)//標籤連結模組
 
 //全局捕捉錯誤
 app.use(errorHandler)
