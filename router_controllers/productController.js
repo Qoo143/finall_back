@@ -181,23 +181,99 @@ exports.createProduct = async (req, res, next) => {
  */
 exports.deleteProductById = async (req, res, next) => {
   try {
-    //1.參數解構
-    const { id } = req.params
-    //2.判斷id
-    if (!id || isNaN(id)) { return res.fail('商品 ID 無效') }
-    //3.執行查詢語句
-    const sql = 'DELETE FROM products WHERE id = ?'
-    const [rows] = await db.query(sql, [id])
-    //4.判斷回傳值
-    if (rows.affectedRows === 0) { return res.fail("查無此商品") }
-    //5.成功
-    res.success(null, "刪除成功");
+    // 1. 參數解構
+    const { id } = req.params;
+
+    // 2. 判斷id
+    if (!id || isNaN(id)) {
+      return res.fail('商品 ID 無效');
+    }
+
+    // 3. 開始事務 (保持與你其他操作一致)
+    await db.query('START TRANSACTION');
+
+    try {
+      // 4. 查詢商品是否存在
+      const [existCheck] = await db.query('SELECT id FROM products WHERE id = ?', [id]);
+      if (existCheck.length === 0) {
+        await db.query('ROLLBACK');
+        return res.fail("查無此商品");
+      }
+
+      // 5. 查詢並整理需要刪除的圖片文件路徑 (與你的更新商品API風格一致)
+      const [imagesToDelete] = await db.query(
+        'SELECT image_url FROM product_images WHERE product_id = ?',
+        [id]
+      );
+
+      // 6. 查詢模型文件路徑 (如果有)
+      const [modelCheck] = await db.query(
+        'SELECT model_url FROM products WHERE id = ? AND model_url IS NOT NULL',
+        [id]
+      );
+
+      // 7. 刪除資料 (按照相依關係順序刪除)
+      // 7.1 先刪除標籤關聯
+      await db.query('DELETE FROM product_tag WHERE product_id = ?', [id]);
+
+      // 7.2 刪除商品圖片記錄
+      await db.query('DELETE FROM product_images WHERE product_id = ?', [id]);
+
+      // 7.3 刪除模型記錄 (如果有)
+      if (modelCheck.length > 0) {
+        await db.query('UPDATE products SET model_url = NULL WHERE id = ?', [id]);
+      }
+
+      // 7.4 最後刪除商品本身
+      const [deleteResult] = await db.query('DELETE FROM products WHERE id = ?', [id]);
+
+      // 8. 提交事務
+      await db.query('COMMIT');
+
+      // 9. 成功後，刪除實際文件 (不影響事務)
+      // 9.1 刪除圖片文件
+      for (const img of imagesToDelete) {
+        const imagePath = img.image_url.startsWith('/')
+          ? img.image_url.substring(1)
+          : img.image_url;
+
+        const filePath = path.join(__dirname, "../public", imagePath);
+
+        if (fs.existsSync(filePath)) {
+          fs.unlink(filePath, err => {
+            if (err) console.warn("刪除圖片檔案失敗:", err);
+          });
+        }
+      }
+
+      // 9.2 刪除模型文件 (如果有)
+      if (modelCheck.length > 0 && modelCheck[0].model_url) {
+        const modelPath = modelCheck[0].model_url.startsWith('/')
+          ? modelCheck[0].model_url.substring(1)
+          : modelCheck[0].model_url;
+
+        const modelFilePath = path.join(__dirname, "../public", modelPath);
+
+        if (fs.existsSync(modelFilePath)) {
+          fs.unlink(modelFilePath, err => {
+            if (err) console.warn("刪除模型檔案失敗:", err);
+          });
+        }
+      }
+
+      // 10. 回應成功
+      res.success(null, "刪除成功");
+
+    } catch (err) {
+      // 如果過程中有錯誤，回滾事務
+      await db.query('ROLLBACK');
+      console.error("商品刪除錯誤:", err);
+      throw err; // 將錯誤傳遞給外層 catch
+    }
   } catch (err) {
-    next(err)
+    next(err);
   }
-
 };
-
 //--------------------<<修>>-------------------------
 /**
  *  更新商品(完整資源) 
@@ -542,11 +618,14 @@ exports.getProductsByFilter = async (req, res, next) => {
       tags,
       name,
       is_active,
+      is_frontend = false, // 標識是否為前台請求
     } = req.query;
 
     const offset = (page - 1) * limit;
     const params = [];
     let whereSql = 'WHERE 1';
+
+
 
     // 日期篩選
     if (start_date && end_date) {
@@ -561,7 +640,11 @@ exports.getProductsByFilter = async (req, res, next) => {
       params.push(category_id);
     }
 
-    if (is_active !== undefined && is_active !== '') {
+    // 如果是前台請求，只顯示上架商品
+    if (is_frontend === 'true') {
+      whereSql += ' AND p.is_active = 1';
+    } else if (is_active !== undefined && is_active !== '') {
+      // 後台可以根據上架狀態篩選
       whereSql += ' AND p.is_active = ?';
       params.push(Number(is_active));
     }

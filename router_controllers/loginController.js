@@ -13,8 +13,8 @@ require('dotenv').config(); // 載入dotenv以讀取環境變數
 const userSchema = joi.object({
 
   account: joi.string()
-    //帳號限制6-12碼
-    .min(6)
+    //帳號限制5-12碼
+    .min(5)
     .max(12)
     .required(),
 
@@ -98,8 +98,12 @@ exports.login = async (req, res, next) => {
     const tokenStr = jwt.sign({ id: result[0].id, account: result[0].account }, JWT_SECRET, { expiresIn: "7d" });
     const token = 'Bearer ' + tokenStr
 
+    //8.移除用戶密碼
+    const userData = { ...result[0] }; // 複製用戶數據
+    userData.password = ""; // 移除密碼
+
     //7.成功
-    res.success({ token, result }, "登入成功")
+    res.success({ token, ...userData }, "登入成功")
   } catch (err) {
     next(err);
   }
