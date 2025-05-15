@@ -1,6 +1,6 @@
 // middleware/authMiddleware.js
 const jwt = require('jsonwebtoken');
-require('dotenv').config();
+require('dotenv').config();//獲取環境變數
 
 // JWT密鑰
 const JWT_SECRET = process.env.jwtSecretkey;
@@ -14,7 +14,7 @@ module.exports = (req, res, next) => {
   }
   
   // 提取 JWT
-  const token = authHeader.split(' ')[1];
+  const token = authHeader.split(' ')[1];//bear開頭後會有一個空格" "
   
   try {
     // 驗證 JWT

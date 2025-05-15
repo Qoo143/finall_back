@@ -19,7 +19,7 @@ exports.getCart = async (req, res, next) => {
       return res.success([], "購物車為空");
     }
     
-    const cartId = cart[0].id;
+    const cartId = cart[0].id;//取出這筆購物車之 id，之後可以查詢對應的商品
     
     // 查詢購物車中的商品
     const [items] = await db.query(`
@@ -53,7 +53,7 @@ exports.getCart = async (req, res, next) => {
   }
 };
 
-// 添加商品到購物車
+// 添加商品到購物車(加上創建購物車邏輯)
 exports.addItem = async (req, res, next) => {
   try {
     const userId = req.user.id;
