@@ -16,6 +16,7 @@ const productTagRouter = require('./router/productTag')//標籤模組
 const tagRouter = require('./router/tag')//標籤模組
 const productCategoryRouter = require('./router/productCategory')//分類模組
 const cartRoutes = require('./router/cart');//購物車模組
+const orderRoutes = require('./router/order');
 
 
 //--------------------<<中間鍵區>>-------------------------
@@ -37,6 +38,8 @@ app.use("/api", loginRoutes) //登入註冊模組
   .use('/categories', productCategoryRouter)//分類模組
   .use('/tags', tagRouter)//標籤模組
   .use('/api/products', productTagRouter)//標籤連結模組
+  .use('/api/orders', orderRoutes);//訂單模組
+
 
 //全局捕捉錯誤
 app.use(errorHandler)
