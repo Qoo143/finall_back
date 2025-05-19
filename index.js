@@ -3,7 +3,7 @@
 //一般導入 + 創建實例
 const express = require("express");
 const app = express();
-const cors = require("cors");//處理跨域
+const cors = require("./utils/cors");//自訂跨域
 
 ///自訂中間鍵
 const responseHelper = require("./middleware/responseHelper");//自訂成功與失敗中間鍵導入
@@ -22,7 +22,7 @@ const orderRoutes = require('./router/order');
 //--------------------<<中間鍵區>>-------------------------
 
 //全局中間鍵
-app.use(cors()) //跨域
+app.use(cors) //跨域
   .use(express.static("public")) //靜態資源 (存放在public)
   .use(express.json()) //json
   .use(express.urlencoded({ extended: true })); //url
@@ -44,8 +44,19 @@ app.use("/api", loginRoutes) //登入註冊模組
 //全局捕捉錯誤
 app.use(errorHandler)
 
+process.on('uncaughtException', (err) => {
+  console.error('未捕獲的異常:', err);
+  // 避免進程立即退出，但記錄錯誤
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('未處理的 Promise 拒絕:', reason);
+  // 記錄未處理的 Promise 錯誤
+});
+
 //--------------------<<監聽區>>-------------------------
 
-app.listen("3007", () => {
-  console.log("監聽127.0.0.1:3007");
+const PORT = process.env.PORT || 3007;
+app.listen(PORT, () => {
+  console.log(`伺服器已啟動： http://127.0.0.1:${PORT}`);
 });

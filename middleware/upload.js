@@ -1,5 +1,22 @@
 const multer = require("multer");
 const path = require("path");
+const fs = require("fs");
+
+// 確保上傳目錄存在(若不存在該目錄則創建)
+const ensureDirectoryExists = (dirPath) => {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });//{ recursive: true }開啟遞迴建立
+    console.log(`目錄已創建: ${dirPath}`);
+  }
+};
+
+// 再次確認必要的目錄
+const uploadDir = path.join(__dirname, "../public/upload/images");
+const modelDir = path.join(__dirname, "../public/upload/models");
+const iconDir = path.join(__dirname, "../public/upload/icons");
+ensureDirectoryExists(uploadDir);
+ensureDirectoryExists(modelDir);
+ensureDirectoryExists(iconDir);
 
 // 允許的類型
 const ALLOWED_IMAGE_TYPES = [
