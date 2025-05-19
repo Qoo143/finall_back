@@ -5,13 +5,14 @@ const path = require("path"); //路徑
 const fs = require("fs"); //文件
 const upload = require('../middleware/upload');//multer實例
 
+//--------------------<<雲端抓資料>>-------------------------
 
-//--------------------<<路由處理區>>-------------------------
-//--------------------<<增>>-------------------------
+const storageService = require('../utils/storage');
+const urlHelpers = require('../utils/urlHelpers');
 
-/**
- *  新增單一商品(完整版)
- */
+
+//--------------------<<api>>-------------------------
+// 創建產品函數
 exports.createProduct = async (req, res, next) => {
   try {
     console.log("收到的請求體:", req.body);
@@ -96,12 +97,6 @@ exports.createProduct = async (req, res, next) => {
     const imageInsertPromises = [];
 
     if (imageFiles.length > 0) {
-      // 確保上傳目錄存在
-      const uploadDir = path.join(__dirname, "../public/upload/images");
-      if (!fs.existsSync(uploadDir)) {
-        fs.mkdirSync(uploadDir, { recursive: true });
-      }
-
       // 獲取主圖設置
       let imageMainFlags = req.body['image_is_main[]'] || req.body.image_is_main || [];
       if (!Array.isArray(imageMainFlags)) {
@@ -115,24 +110,25 @@ exports.createProduct = async (req, res, next) => {
           Number(imageMainFlags[i]) :
           (i === 0 ? 1 : 0); // 如果沒有明確指定，第一張為主圖
 
-        // 處理文件名和路徑
-        const ext = path.extname(file.originalname);
-        const newFilename = `${file.filename}${ext}`;
-        const savePath = path.join(uploadDir, newFilename);
-        const imageUrl = `/upload/images/${newFilename}`;
-
-        // 移動文件
-        fs.renameSync(file.path, savePath);
-
-        // 準備插入數據庫
-        imageInsertPromises.push(
-          db.query(
-            `INSERT INTO product_images (
-              product_id, image_url, is_main, sort_order, created_time, update_time
-            ) VALUES (?, ?, ?, ?, ?, ?)`,
-            [productId, imageUrl, isMain, i, date, date]
-          )
-        );
+        try {
+          // 上傳到 Cloudinary
+          const uploadResult = await storageService.uploadImage(file.path, {
+            folder: `products/${productId}/images`
+          });
+          
+          // 準備插入數據庫
+          imageInsertPromises.push(
+            db.query(
+              `INSERT INTO product_images (
+                product_id, image_url, public_id, is_main, sort_order, created_time, update_time
+              ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              [productId, uploadResult.url, uploadResult.public_id, isMain, i, date, date]
+            )
+          );
+        } catch (error) {
+          console.error(`上傳圖片失敗: ${file.originalname}`, error);
+          // 繼續處理其他圖片
+        }
       }
 
       if (imageInsertPromises.length > 0) {
@@ -143,26 +139,21 @@ exports.createProduct = async (req, res, next) => {
     // 5. 處理模型文件上傳 (如果有)
     const modelFile = req.files?.find(file => file.fieldname === 'model');
     if (modelFile) {
-      // 確保模型目錄存在
-      const modelDir = path.join(__dirname, "../public/upload/models");
-      if (!fs.existsSync(modelDir)) {
-        fs.mkdirSync(modelDir, { recursive: true });
+      try {
+        // 上傳到 Cloudinary
+        const modelResult = await storageService.uploadModel(modelFile.path, {
+          folder: `products/${productId}/models`
+        });
+
+        // 更新商品的 model_url
+        await db.query(
+          "UPDATE products SET model_url = ?, model_public_id = ? WHERE id = ?",
+          [modelResult.url, modelResult.public_id, productId]
+        );
+      } catch (error) {
+        console.error(`上傳模型失敗: ${modelFile.originalname}`, error);
+        // 繼續執行，不因為模型上傳失敗而中斷整個流程
       }
-
-      // 處理文件名和路徑
-      const ext = path.extname(modelFile.originalname);
-      const newFilename = `${modelFile.filename}${ext}`;
-      const savePath = path.join(modelDir, newFilename);
-      const modelUrl = `/upload/models/${newFilename}`;
-
-      // 移動文件
-      fs.renameSync(modelFile.path, savePath);
-
-      // 更新商品的 model_url
-      await db.query(
-        "UPDATE products SET model_url = ? WHERE id = ?",
-        [modelUrl, productId]
-      );
     }
 
     // 6. 返回成功消息和新創建的商品 ID
@@ -174,11 +165,7 @@ exports.createProduct = async (req, res, next) => {
   }
 };
 
-//--------------------<<刪>>-------------------------
-
-/**
- *  刪除單一商品
- */
+// 刪除產品時也要移除雲端存儲的檔案
 exports.deleteProductById = async (req, res, next) => {
   try {
     // 1. 參數解構
@@ -189,7 +176,7 @@ exports.deleteProductById = async (req, res, next) => {
       return res.fail('商品 ID 無效');
     }
 
-    // 3. 開始事務 (保持與你其他操作一致)
+    // 3. 開始事務
     await db.query('START TRANSACTION');
 
     try {
@@ -200,15 +187,15 @@ exports.deleteProductById = async (req, res, next) => {
         return res.fail("查無此商品");
       }
 
-      // 5. 查詢並整理需要刪除的圖片文件路徑 (與你的更新商品API風格一致)
+      // 5. 查詢並收集需要刪除的圖片 public_id
       const [imagesToDelete] = await db.query(
-        'SELECT image_url FROM product_images WHERE product_id = ?',
+        'SELECT image_url, public_id FROM product_images WHERE product_id = ?',
         [id]
       );
 
-      // 6. 查詢模型文件路徑 (如果有)
+      // 6. 查詢模型文件 public_id
       const [modelCheck] = await db.query(
-        'SELECT model_url FROM products WHERE id = ? AND model_url IS NOT NULL',
+        'SELECT model_url, model_public_id FROM products WHERE id = ? AND model_url IS NOT NULL',
         [id]
       );
 
@@ -221,7 +208,7 @@ exports.deleteProductById = async (req, res, next) => {
 
       // 7.3 刪除模型記錄 (如果有)
       if (modelCheck.length > 0) {
-        await db.query('UPDATE products SET model_url = NULL WHERE id = ?', [id]);
+        await db.query('UPDATE products SET model_url = NULL, model_public_id = NULL WHERE id = ?', [id]);
       }
 
       // 7.4 最後刪除商品本身
@@ -230,34 +217,24 @@ exports.deleteProductById = async (req, res, next) => {
       // 8. 提交事務
       await db.query('COMMIT');
 
-      // 9. 成功後，刪除實際文件 (不影響事務)
+      // 9. 成功後，刪除雲端存儲的檔案
       // 9.1 刪除圖片文件
       for (const img of imagesToDelete) {
-        const imagePath = img.image_url.startsWith('/')
-          ? img.image_url.substring(1)
-          : img.image_url;
-
-        const filePath = path.join(__dirname, "../public", imagePath);
-
-        if (fs.existsSync(filePath)) {
-          fs.unlink(filePath, err => {
-            if (err) console.warn("刪除圖片檔案失敗:", err);
-          });
+        if (img.public_id) {
+          try {
+            await storageService.deleteFile(img.public_id);
+          } catch (error) {
+            console.warn("刪除雲端圖片失敗:", error);
+          }
         }
       }
 
       // 9.2 刪除模型文件 (如果有)
-      if (modelCheck.length > 0 && modelCheck[0].model_url) {
-        const modelPath = modelCheck[0].model_url.startsWith('/')
-          ? modelCheck[0].model_url.substring(1)
-          : modelCheck[0].model_url;
-
-        const modelFilePath = path.join(__dirname, "../public", modelPath);
-
-        if (fs.existsSync(modelFilePath)) {
-          fs.unlink(modelFilePath, err => {
-            if (err) console.warn("刪除模型檔案失敗:", err);
-          });
+      if (modelCheck.length > 0 && modelCheck[0].model_public_id) {
+        try {
+          await storageService.deleteFile(modelCheck[0].model_public_id, { resource_type: 'raw' });
+        } catch (error) {
+          console.warn("刪除雲端模型檔案失敗:", error);
         }
       }
 
@@ -274,10 +251,8 @@ exports.deleteProductById = async (req, res, next) => {
     next(err);
   }
 };
-//--------------------<<修>>-------------------------
-/**
- *  更新商品(完整資源) 
- */
+
+// 更新產品 - 也需要修改雲端儲存邏輯
 exports.updateProductById = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -329,65 +304,65 @@ exports.updateProductById = async (req, res, next) => {
       }
     }
 
-
-
     // ========= 4. 處理模型文件 =========
-    // 
     const modelFile = req.files?.find(file => file.fieldname === 'model');
     const shouldDeleteModel = req.body.delete_model === '1';
 
     try {
       if (modelFile) {
-        // 1. 上傳新模型文件
-        // 確保目錄存在
-        const modelDir = path.join(__dirname, "../public/upload/models");
-        if (!fs.existsSync(modelDir)) {
-          fs.mkdirSync(modelDir, { recursive: true });
+        // 1. 查詢並刪除舊模型 (如果有)
+        const [oldModel] = await db.query(
+          "SELECT model_url, model_public_id FROM products WHERE id = ? AND model_url IS NOT NULL",
+          [id]
+        );
+
+        if (oldModel.length > 0 && oldModel[0].model_public_id) {
+          try {
+            await storageService.deleteFile(oldModel[0].model_public_id, { resource_type: 'raw' });
+          } catch (error) {
+            console.warn("刪除舊模型檔案失敗:", error);
+          }
         }
 
-        // 處理文件名和路徑
-        const ext = path.extname(modelFile.originalname);
-        const newFilename = `${modelFile.filename}${ext}`;
-        const savePath = path.join(modelDir, newFilename);
-        const modelUrl = `/upload/models/${newFilename}`;
+        // 2. 上傳新模型文件
+        const modelResult = await storageService.uploadModel(modelFile.path, {
+          folder: `products/${id}/models`
+        });
 
-        // 移動文件
-        fs.renameSync(modelFile.path, savePath);
-
-        // 更新數據庫
-        await db.query("UPDATE products SET model_url = ? WHERE id = ?", [modelUrl, id]);
-        console.log("新模型已上傳:", modelUrl);
+        // 3. 更新數據庫
+        await db.query(
+          "UPDATE products SET model_url = ?, model_public_id = ? WHERE id = ?",
+          [modelResult.url, modelResult.public_id, id]
+        );
+        console.log("新模型已上傳:", modelResult.url);
 
       } else if (shouldDeleteModel) {
-        // 2. 刪除舊模型
-        // 先查詢舊模型URL
-        const [oldModel] = await db.query("SELECT model_url FROM products WHERE id = ?", [id]);
-        const oldModelUrl = oldModel[0]?.model_url;
+        // 刪除舊模型
+        const [oldModel] = await db.query(
+          "SELECT model_url, model_public_id FROM products WHERE id = ? AND model_url IS NOT NULL",
+          [id]
+        );
 
-        if (oldModelUrl) {
-          // 嘗試刪除舊文件
-          const oldFilePath = path.join(__dirname, "../public", oldModelUrl.startsWith('/') ? oldModelUrl.substring(1) : oldModelUrl);
-
-          if (fs.existsSync(oldFilePath)) {
-            fs.unlinkSync(oldFilePath);
-            console.log("已刪除舊模型文件:", oldFilePath);
+        if (oldModel.length > 0 && oldModel[0].model_public_id) {
+          try {
+            await storageService.deleteFile(oldModel[0].model_public_id, { resource_type: 'raw' });
+          } catch (error) {
+            console.warn("刪除舊模型檔案失敗:", error);
           }
         }
 
         // 更新數據庫，清空model_url
-        await db.query("UPDATE products SET model_url = NULL WHERE id = ?", [id]);
+        await db.query("UPDATE products SET model_url = NULL, model_public_id = NULL WHERE id = ?", [id]);
         console.log("已清除模型URL");
       }
-      // 3. 如果兩者都沒有，保持不變
     } catch (err) {
       console.error("處理模型文件時出錯:", err);
     }
+
     // ========= 5. 處理圖片 =========
     /**
-    *   5-1. 刪除圖片資料與檔案 
-    */
-    //先將formData資料格式若正確可以直接轉陣列
-    // 修改後的代碼
+     *   5-1. 刪除圖片資料與檔案 
+     */
     let deletedIds = req.body.deleted_image_ids || req.body['deleted_image_ids[]'] || [];
     console.log("確認刪除陣列", deletedIds);
 
@@ -395,52 +370,41 @@ exports.updateProductById = async (req, res, next) => {
     if (!Array.isArray(deletedIds)) {
       deletedIds = [deletedIds]; // 單一值轉成陣列
     }
-    // 確保ID是數字所以清除非數字(ex:nall) - 這邊是刪除照片所以索引便更也不影響
+    // 確保ID是數字
     deletedIds = deletedIds.map(id => Number(id)).filter(id => !isNaN(id));
 
     // 只有當有要刪除的圖片時才執行
     if (deletedIds.length > 0) {
-      // 先找出要刪除的圖片路徑 他會回傳陣列
+      // 先找出要刪除的圖片資訊
       const [toDelete] = await db.query(`
-        SELECT image_url FROM product_images 
+        SELECT image_url, public_id FROM product_images 
         WHERE id IN (?) AND product_id = ?`, [deletedIds, id]);
 
-      // 從 product_images 表中，刪除這些圖片資料，且
-      // 只刪除屬於這個 product_id 的那幾張圖 
+      // 從 product_images 表中，刪除這些圖片資料
       await db.query(`
         DELETE FROM product_images 
         WHERE id IN (?) AND product_id = ?`, [deletedIds, id]);
 
-      // 遍歷剛剛查出來的圖片資訊
-      // 刪除檔案系統中的檔案
+      // 刪除雲端存儲中的圖片
       for (const img of toDelete) {
-        //清除後端資料庫url開鈄起始/
-        const imagePath = img.image_url.startsWith('/') ? img.image_url.substring(1) : img.image_url;
-        //相對路徑轉絕對路徑
-        const filePath = path.join(__dirname, "../public", imagePath);
-        if (fs.existsSync(filePath)) {
-          fs.unlink(filePath, err => {
-            if (err) console.warn("刪除檔案失敗:", err);
-          });
-        } else {
-          console.warn("檔案不存在:", filePath);
+        if (img.public_id) {
+          try {
+            await storageService.deleteFile(img.public_id);
+          } catch (error) {
+            console.warn("刪除雲端圖片失敗:", error);
+          }
         }
       }
     }
 
-    // 確保 upload/images 目錄存在
-    const uploadDir = path.join(__dirname, "../public/upload/images");
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-      console.log("創建上傳目錄:", uploadDir);
-    }
-
     // 處理請求中的圖片信息
     console.log("處理圖片索引...");
-    const imageFiles = req.files || []; // 獲取所有上傳的文件
-    console.log("文件總數:", imageFiles.length);
+    const imageFiles = req.files?.filter(file => 
+      file.fieldname === 'images[]' || file.fieldname === 'images'
+    ) || [];
+    console.log("上傳圖片文件數:", imageFiles.length);
 
-    // 解析 is_main 和 id 設置 - 支持多種可能的參數名稱格式
+    // 解析 is_main 和 id 設置
     let imageIds = req.body.image_id || req.body['image_id[]'] || [];
     let imageIsMains = req.body.image_is_main || req.body['image_is_main[]'] || [];
 
@@ -462,118 +426,68 @@ exports.updateProductById = async (req, res, next) => {
         const fileIndex = startIndex + i;
         // 確保索引在範圍內
         if (fileIndex >= 0 && fileIndex < imageIsMains.length) {
-          fileIsMainMap.set(imageFiles[i].filename, Number(imageIsMains[fileIndex]));
+          fileIsMainMap.set(imageFiles[i].fieldname + '_' + i, Number(imageIsMains[fileIndex]));
         }
       }
     }
 
     console.log("文件主圖映射表:", Array.from(fileIsMainMap.entries()));
 
-    // 構建圖片元數據列表
-    const imageMetaList = [];
+    // 構建圖片元數據列表 - 只包含已有圖片的ID和主圖狀態
+    const existingImageMeta = [];
 
-    // 先處理已有圖片
+    // 處理已有圖片的主圖狀態
     for (let i = 0; i < imageIds.length; i++) {
       const id = Number(imageIds[i]);
       if (id > 0) { // 只處理有效ID的現有圖片
-        imageMetaList.push({
+        existingImageMeta.push({
           id: id,
-          is_main: i < imageIsMains.length ? Number(imageIsMains[i]) : 0,
-          file: null
+          is_main: i < imageIsMains.length ? Number(imageIsMains[i]) : 0
         });
       }
-    }
-
-    // 再處理新上傳的圖片
-    for (const file of imageFiles) {
-      const isMain = fileIsMainMap.get(file.filename) || 0;
-      imageMetaList.push({
-        id: 0,
-        is_main: isMain,
-        file: file
-      });
-    }
-
-    console.log("構建的圖片列表:", imageMetaList.map(img => ({
-      id: img.id,
-      is_main: img.is_main,
-      hasFile: !!img.file
-    })));
-
-    // 檢查是否至少有一張圖片被設為主圖
-    const hasMainImage = imageMetaList.some(img => img.is_main === 1);
-    console.log("是否有設定主圖:", hasMainImage);
-
-    // 如果沒有主圖，且有圖片，則將第一張圖片設為主圖
-    if (!hasMainImage && imageMetaList.length > 0) {
-      imageMetaList[0].is_main = 1;
-      console.log("未設置主圖，將第一張圖片設為主圖");
     }
 
     // 清除所有主圖標記 - 只針對當前商品
     await db.query("UPDATE product_images SET is_main = 0 WHERE product_id = ?", [id]);
     console.log("已清除商品 ID", id, "的所有主圖標記");
 
-    // 處理每個圖片
+    // 處理已有圖片的主圖狀態
+    for (const img of existingImageMeta) {
+      if (img.is_main === 1) {
+        await db.query(`
+          UPDATE product_images
+          SET is_main = 1, update_time = ?
+          WHERE id = ? AND product_id = ?`,
+          [date, img.id, id]
+        );
+        console.log(`設置圖片 ID ${img.id} 為主圖`);
+      }
+    }
+
+    // 處理每個新上傳的圖片
     let processedCount = 0;
     let errorCount = 0;
 
-    for (const img of imageMetaList) {
+    for (let i = 0; i < imageFiles.length; i++) {
       try {
-        if (img.file) {
-          // 有上傳新圖
-          const ext = path.extname(img.file.originalname);
-          const name = path.basename(img.file.filename, path.extname(img.file.filename));
-          const newFilename = `${name}${ext}`;
-          const savePath = path.join(uploadDir, newFilename);
-          const imageUrl = `/upload/images/${newFilename}`;
+        const file = imageFiles[i];
+        const isMain = fileIsMainMap.get(file.fieldname + '_' + i) || 0;
 
-          console.log("處理新圖片:");
-          console.log("- 原始文件名:", img.file.originalname);
-          console.log("- 臨時路徑:", img.file.path);
-          console.log("- 目標路徑:", savePath);
-          console.log("- 數據庫URL:", imageUrl);
-          console.log("- is_main 值:", img.is_main);  // 記錄 is_main 值
+        // 上傳到 Cloudinary
+        const uploadResult = await storageService.uploadImage(file.path, {
+          folder: `products/${id}/images`
+        });
 
-          // 檢查源文件是否存在
-          if (!fs.existsSync(img.file.path)) {
-            console.error("錯誤: 臨時文件不存在:", img.file.path);
-            errorCount++;
-            continue;
-          }
+        // 插入新圖片記錄
+        const [insertResult] = await db.query(`
+          INSERT INTO product_images (product_id, image_url, public_id, is_main, sort_order, created_time, update_time)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [id, uploadResult.url, uploadResult.public_id, isMain, i, date, date]
+        );
 
-          // 將檔案從臨時目錄移到目標目錄
-          fs.renameSync(img.file.path, savePath);
-          console.log("文件成功移動到:", savePath);
+         console.log(`圖片上傳成功，ID: ${insertResult.insertId}, 主圖狀態: ${isMain}`);
+        processedCount++;
 
-          // 插入新圖片記錄
-          const [insertResult] = await db.query(`
-            INSERT INTO product_images (product_id, image_url, is_main, created_time, update_time)
-            VALUES (?, ?, ?, ?, ?)`,
-            [id, imageUrl, img.is_main, date, date]
-          );
-
-          console.log("圖片記錄插入成功, ID:", insertResult.insertId, "is_main:", img.is_main);
-          processedCount++;
-
-        } else if (img.id > 0) {
-          // 舊圖片只更新主圖狀態
-          console.log("更新舊圖片:", img.id, "主圖狀態:", img.is_main);
-
-          const [updateResult] = await db.query(`
-            UPDATE product_images
-            SET is_main = ?, update_time = ?
-            WHERE id = ? AND product_id = ?`,
-            [img.is_main, date, img.id, id]
-          );
-
-          if (updateResult.affectedRows > 0) {
-            console.log("圖片狀態更新成功");
-            processedCount++;
-          } else {
-            console.warn("圖片狀態更新失敗，可能圖片ID不存在:", img.id);
-          }
-        }
       } catch (err) {
         console.error("處理圖片時發生錯誤:", err);
         errorCount++;
@@ -604,7 +518,608 @@ exports.updateProductById = async (req, res, next) => {
     next(err); // 交由全局錯誤中間件處理
   }
 };
-//--------------------<<查>>-------------------------
+
+
+
+// /**
+//  *  新增單一商品(完整版)
+//  */
+// exports.createProduct = async (req, res, next) => {
+//   try {
+//     console.log("收到的請求體:", req.body);
+//     console.log("收到的檔案:", req.files);
+
+//     // 1. 提取並驗證基本商品信息
+//     const {
+//       name,
+//       price,
+//       stock,
+//       is_active = 0,
+//       category_id = 1,
+//       description = null,
+//       tagIds = []
+//     } = req.body;
+
+//     // 檢查必填字段
+//     if (!name || price === undefined || stock === undefined) {
+//       return res.fail("缺少必要欄位 (名稱、價格或庫存)", 1);
+//     }
+
+//     const date = new Date();
+
+//     // 2. 插入商品基本信息
+//     const sql = `
+//       INSERT INTO products (
+//         name, description, price, stock, is_active, 
+//         category_id, created_time, update_time
+//       )
+//       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+//     `;
+
+//     const [result] = await db.query(sql, [
+//       name,
+//       description,
+//       price,
+//       stock,
+//       Number(is_active),
+//       category_id,
+//       date,
+//       date
+//     ]);
+
+//     const productId = result.insertId;
+
+//     // 3. 處理標籤關聯
+//     // 確保 tagIds 是數組
+//     let parsedTagIds = tagIds;
+//     if (!Array.isArray(parsedTagIds)) {
+//       try {
+//         // 嘗試解析 JSON 字符串
+//         parsedTagIds = JSON.parse(parsedTagIds);
+//       } catch {
+//         // 如果無法解析，可能是單一值或空
+//         parsedTagIds = parsedTagIds ? [parsedTagIds] : [];
+//       }
+//     }
+
+//     // 過濾有效的標籤 ID
+//     const validTagIds = parsedTagIds
+//       .map(id => Number(id))
+//       .filter(id => !isNaN(id));
+
+//     if (validTagIds.length > 0) {
+//       // 批量插入標籤關聯
+//       const tagInsertPromises = validTagIds.map(tagId => {
+//         return db.query(
+//           `INSERT INTO product_tag (product_id, tag_id, created_time, update_time) 
+//            VALUES (?, ?, ?, ?)`,
+//           [productId, tagId, date, date]
+//         );
+//       });
+
+//       await Promise.all(tagInsertPromises);
+//     }
+
+//     // 4. 處理圖片上傳
+//     const imageFiles = req.files?.filter(file =>
+//       file.fieldname === 'images[]' || file.fieldname === 'images'
+//     ) || [];
+
+//     const imageInsertPromises = [];
+
+//     if (imageFiles.length > 0) {
+//       // 確保上傳目錄存在
+//       const uploadDir = path.join(__dirname, "../public/upload/images");
+//       if (!fs.existsSync(uploadDir)) {
+//         fs.mkdirSync(uploadDir, { recursive: true });
+//       }
+
+//       // 獲取主圖設置
+//       let imageMainFlags = req.body['image_is_main[]'] || req.body.image_is_main || [];
+//       if (!Array.isArray(imageMainFlags)) {
+//         imageMainFlags = [imageMainFlags];
+//       }
+
+//       // 處理每個圖片
+//       for (let i = 0; i < imageFiles.length; i++) {
+//         const file = imageFiles[i];
+//         const isMain = i < imageMainFlags.length ?
+//           Number(imageMainFlags[i]) :
+//           (i === 0 ? 1 : 0); // 如果沒有明確指定，第一張為主圖
+
+//         // 處理文件名和路徑
+//         const ext = path.extname(file.originalname);
+//         const newFilename = `${file.filename}${ext}`;
+//         const savePath = path.join(uploadDir, newFilename);
+//         const imageUrl = `/upload/images/${newFilename}`;
+
+//         // 移動文件
+//         fs.renameSync(file.path, savePath);
+
+//         // 準備插入數據庫
+//         imageInsertPromises.push(
+//           db.query(
+//             `INSERT INTO product_images (
+//               product_id, image_url, is_main, sort_order, created_time, update_time
+//             ) VALUES (?, ?, ?, ?, ?, ?)`,
+//             [productId, imageUrl, isMain, i, date, date]
+//           )
+//         );
+//       }
+
+//       if (imageInsertPromises.length > 0) {
+//         await Promise.all(imageInsertPromises);
+//       }
+//     }
+
+//     // 5. 處理模型文件上傳 (如果有)
+//     const modelFile = req.files?.find(file => file.fieldname === 'model');
+//     if (modelFile) {
+//       // 確保模型目錄存在
+//       const modelDir = path.join(__dirname, "../public/upload/models");
+//       if (!fs.existsSync(modelDir)) {
+//         fs.mkdirSync(modelDir, { recursive: true });
+//       }
+
+//       // 處理文件名和路徑
+//       const ext = path.extname(modelFile.originalname);
+//       const newFilename = `${modelFile.filename}${ext}`;
+//       const savePath = path.join(modelDir, newFilename);
+//       const modelUrl = `/upload/models/${newFilename}`;
+
+//       // 移動文件
+//       fs.renameSync(modelFile.path, savePath);
+
+//       // 更新商品的 model_url
+//       await db.query(
+//         "UPDATE products SET model_url = ? WHERE id = ?",
+//         [modelUrl, productId]
+//       );
+//     }
+
+//     // 6. 返回成功消息和新創建的商品 ID
+//     res.success({ id: productId }, "商品創建成功");
+
+//   } catch (err) {
+//     console.error("創建商品錯誤:", err);
+//     next(err);
+//   }
+// };
+// /**
+//  *  刪除單一商品
+//  */
+// exports.deleteProductById = async (req, res, next) => {
+//   try {
+//     // 1. 參數解構
+//     const { id } = req.params;
+
+//     // 2. 判斷id
+//     if (!id || isNaN(id)) {
+//       return res.fail('商品 ID 無效');
+//     }
+
+//     // 3. 開始事務 (保持與你其他操作一致)
+//     await db.query('START TRANSACTION');
+
+//     try {
+//       // 4. 查詢商品是否存在
+//       const [existCheck] = await db.query('SELECT id FROM products WHERE id = ?', [id]);
+//       if (existCheck.length === 0) {
+//         await db.query('ROLLBACK');
+//         return res.fail("查無此商品");
+//       }
+
+//       // 5. 查詢並整理需要刪除的圖片文件路徑 (與你的更新商品API風格一致)
+//       const [imagesToDelete] = await db.query(
+//         'SELECT image_url FROM product_images WHERE product_id = ?',
+//         [id]
+//       );
+
+//       // 6. 查詢模型文件路徑 (如果有)
+//       const [modelCheck] = await db.query(
+//         'SELECT model_url FROM products WHERE id = ? AND model_url IS NOT NULL',
+//         [id]
+//       );
+
+//       // 7. 刪除資料 (按照相依關係順序刪除)
+//       // 7.1 先刪除標籤關聯
+//       await db.query('DELETE FROM product_tag WHERE product_id = ?', [id]);
+
+//       // 7.2 刪除商品圖片記錄
+//       await db.query('DELETE FROM product_images WHERE product_id = ?', [id]);
+
+//       // 7.3 刪除模型記錄 (如果有)
+//       if (modelCheck.length > 0) {
+//         await db.query('UPDATE products SET model_url = NULL WHERE id = ?', [id]);
+//       }
+
+//       // 7.4 最後刪除商品本身
+//       const [deleteResult] = await db.query('DELETE FROM products WHERE id = ?', [id]);
+
+//       // 8. 提交事務
+//       await db.query('COMMIT');
+
+//       // 9. 成功後，刪除實際文件 (不影響事務)
+//       // 9.1 刪除圖片文件
+//       for (const img of imagesToDelete) {
+//         const imagePath = img.image_url.startsWith('/')
+//           ? img.image_url.substring(1)
+//           : img.image_url;
+
+//         const filePath = path.join(__dirname, "../public", imagePath);
+
+//         if (fs.existsSync(filePath)) {
+//           fs.unlink(filePath, err => {
+//             if (err) console.warn("刪除圖片檔案失敗:", err);
+//           });
+//         }
+//       }
+
+//       // 9.2 刪除模型文件 (如果有)
+//       if (modelCheck.length > 0 && modelCheck[0].model_url) {
+//         const modelPath = modelCheck[0].model_url.startsWith('/')
+//           ? modelCheck[0].model_url.substring(1)
+//           : modelCheck[0].model_url;
+
+//         const modelFilePath = path.join(__dirname, "../public", modelPath);
+
+//         if (fs.existsSync(modelFilePath)) {
+//           fs.unlink(modelFilePath, err => {
+//             if (err) console.warn("刪除模型檔案失敗:", err);
+//           });
+//         }
+//       }
+
+//       // 10. 回應成功
+//       res.success(null, "刪除成功");
+
+//     } catch (err) {
+//       // 如果過程中有錯誤，回滾事務
+//       await db.query('ROLLBACK');
+//       console.error("商品刪除錯誤:", err);
+//       throw err; // 將錯誤傳遞給外層 catch
+//     }
+//   } catch (err) {
+//     next(err);
+//   }
+// };
+// /**
+//  *  更新商品(完整資源) 
+//  */
+// exports.updateProductById = async (req, res, next) => {
+//   try {
+//     const { id } = req.params;
+//     const date = new Date();
+
+//     // ========= 1. 接收並驗證基本欄位 =========
+//     const {
+//       name, price, stock, is_active, category_id, description
+//     } = req.body;
+
+//     // 輸出收到的請求體，方便調試
+//     console.log("收到的請求體:", req.body);
+//     console.log("收到的檔案:", req.files);
+
+//     if (!name || price === undefined || stock === undefined) {
+//       return res.fail("缺少必要欄位");
+//     }
+
+//     // ========= 2. 更新基本資料 =========
+//     await db.query(`
+//       UPDATE products SET 
+//         name = ?, 
+//         price = ?, 
+//         stock = ?, 
+//         is_active = ?, 
+//         category_id = ?, 
+//         description = ?, 
+//         update_time = ? 
+//       WHERE id = ?
+//     `, [name, price, stock, Number(is_active), category_id, description || null, date, id]);
+
+//     // ========= 3. 處理標籤（先刪後建） =========
+//     let tagIds = req.body['tagIds[]'] || req.body.tagIds || [];
+//     if (!Array.isArray(tagIds)) {
+//       try { tagIds = JSON.parse(tagIds); } catch { tagIds = []; }
+//     }
+
+//     // 確保標籤ID是數字
+//     tagIds = tagIds.map(id => Number(id)).filter(id => !isNaN(id));
+
+//     await db.query("DELETE FROM product_tag WHERE product_id = ?", [id]);
+
+//     // 只有當有標籤時才執行插入
+//     if (tagIds.length > 0) {
+//       for (const tagId of tagIds) {
+//         await db.query(`
+//           INSERT INTO product_tag (product_id, tag_id, created_time, update_time) 
+//           VALUES (?, ?, ?, ?)`, [id, tagId, date, date]);
+//       }
+//     }
+
+
+
+//     // ========= 4. 處理模型文件 =========
+//     // 
+//     const modelFile = req.files?.find(file => file.fieldname === 'model');
+//     const shouldDeleteModel = req.body.delete_model === '1';
+
+//     try {
+//       if (modelFile) {
+//         // 1. 上傳新模型文件
+//         // 確保目錄存在
+//         const modelDir = path.join(__dirname, "../public/upload/models");
+//         if (!fs.existsSync(modelDir)) {
+//           fs.mkdirSync(modelDir, { recursive: true });
+//         }
+
+//         // 處理文件名和路徑
+//         const ext = path.extname(modelFile.originalname);
+//         const newFilename = `${modelFile.filename}${ext}`;
+//         const savePath = path.join(modelDir, newFilename);
+//         const modelUrl = `/upload/models/${newFilename}`;
+
+//         // 移動文件
+//         fs.renameSync(modelFile.path, savePath);
+
+//         // 更新數據庫
+//         await db.query("UPDATE products SET model_url = ? WHERE id = ?", [modelUrl, id]);
+//         console.log("新模型已上傳:", modelUrl);
+
+//       } else if (shouldDeleteModel) {
+//         // 2. 刪除舊模型
+//         // 先查詢舊模型URL
+//         const [oldModel] = await db.query("SELECT model_url FROM products WHERE id = ?", [id]);
+//         const oldModelUrl = oldModel[0]?.model_url;
+
+//         if (oldModelUrl) {
+//           // 嘗試刪除舊文件
+//           const oldFilePath = path.join(__dirname, "../public", oldModelUrl.startsWith('/') ? oldModelUrl.substring(1) : oldModelUrl);
+
+//           if (fs.existsSync(oldFilePath)) {
+//             fs.unlinkSync(oldFilePath);
+//             console.log("已刪除舊模型文件:", oldFilePath);
+//           }
+//         }
+
+//         // 更新數據庫，清空model_url
+//         await db.query("UPDATE products SET model_url = NULL WHERE id = ?", [id]);
+//         console.log("已清除模型URL");
+//       }
+//       // 3. 如果兩者都沒有，保持不變
+//     } catch (err) {
+//       console.error("處理模型文件時出錯:", err);
+//     }
+//     // ========= 5. 處理圖片 =========
+//     /**
+//     *   5-1. 刪除圖片資料與檔案 
+//     */
+//     //先將formData資料格式若正確可以直接轉陣列
+//     // 修改後的代碼
+//     let deletedIds = req.body.deleted_image_ids || req.body['deleted_image_ids[]'] || [];
+//     console.log("確認刪除陣列", deletedIds);
+
+//     // 確保 deletedIds 是陣列
+//     if (!Array.isArray(deletedIds)) {
+//       deletedIds = [deletedIds]; // 單一值轉成陣列
+//     }
+//     // 確保ID是數字所以清除非數字(ex:nall) - 這邊是刪除照片所以索引便更也不影響
+//     deletedIds = deletedIds.map(id => Number(id)).filter(id => !isNaN(id));
+
+//     // 只有當有要刪除的圖片時才執行
+//     if (deletedIds.length > 0) {
+//       // 先找出要刪除的圖片路徑 他會回傳陣列
+//       const [toDelete] = await db.query(`
+//         SELECT image_url FROM product_images 
+//         WHERE id IN (?) AND product_id = ?`, [deletedIds, id]);
+
+//       // 從 product_images 表中，刪除這些圖片資料，且
+//       // 只刪除屬於這個 product_id 的那幾張圖 
+//       await db.query(`
+//         DELETE FROM product_images 
+//         WHERE id IN (?) AND product_id = ?`, [deletedIds, id]);
+
+//       // 遍歷剛剛查出來的圖片資訊
+//       // 刪除檔案系統中的檔案
+//       for (const img of toDelete) {
+//         //清除後端資料庫url開鈄起始/
+//         const imagePath = img.image_url.startsWith('/') ? img.image_url.substring(1) : img.image_url;
+//         //相對路徑轉絕對路徑
+//         const filePath = path.join(__dirname, "../public", imagePath);
+//         if (fs.existsSync(filePath)) {
+//           fs.unlink(filePath, err => {
+//             if (err) console.warn("刪除檔案失敗:", err);
+//           });
+//         } else {
+//           console.warn("檔案不存在:", filePath);
+//         }
+//       }
+//     }
+
+//     // 確保 upload/images 目錄存在
+//     const uploadDir = path.join(__dirname, "../public/upload/images");
+//     if (!fs.existsSync(uploadDir)) {
+//       fs.mkdirSync(uploadDir, { recursive: true });
+//       console.log("創建上傳目錄:", uploadDir);
+//     }
+
+//     // 處理請求中的圖片信息
+//     console.log("處理圖片索引...");
+//     const imageFiles = req.files || []; // 獲取所有上傳的文件
+//     console.log("文件總數:", imageFiles.length);
+
+//     // 解析 is_main 和 id 設置 - 支持多種可能的參數名稱格式
+//     let imageIds = req.body.image_id || req.body['image_id[]'] || [];
+//     let imageIsMains = req.body.image_is_main || req.body['image_is_main[]'] || [];
+
+//     // 確保是陣列
+//     if (!Array.isArray(imageIds)) imageIds = [imageIds].filter(Boolean);
+//     if (!Array.isArray(imageIsMains)) imageIsMains = [imageIsMains].filter(Boolean);
+
+//     console.log("圖片 ID 列表:", imageIds);
+//     console.log("圖片 is_main 列表:", imageIsMains);
+
+//     // 創建一個映射表，用於查找每個文件的主圖狀態
+//     const fileIsMainMap = new Map();
+
+//     // 如果有上傳新文件，且提供了相應的 is_main 值
+//     if (imageFiles.length > 0 && imageIsMains.length >= imageIds.length) {
+//       // 計算新文件對應的索引位置
+//       const startIndex = imageIds.length - imageFiles.length;
+//       for (let i = 0; i < imageFiles.length; i++) {
+//         const fileIndex = startIndex + i;
+//         // 確保索引在範圍內
+//         if (fileIndex >= 0 && fileIndex < imageIsMains.length) {
+//           fileIsMainMap.set(imageFiles[i].filename, Number(imageIsMains[fileIndex]));
+//         }
+//       }
+//     }
+
+//     console.log("文件主圖映射表:", Array.from(fileIsMainMap.entries()));
+
+//     // 構建圖片元數據列表
+//     const imageMetaList = [];
+
+//     // 先處理已有圖片
+//     for (let i = 0; i < imageIds.length; i++) {
+//       const id = Number(imageIds[i]);
+//       if (id > 0) { // 只處理有效ID的現有圖片
+//         imageMetaList.push({
+//           id: id,
+//           is_main: i < imageIsMains.length ? Number(imageIsMains[i]) : 0,
+//           file: null
+//         });
+//       }
+//     }
+
+//     // 再處理新上傳的圖片
+//     for (const file of imageFiles) {
+//       const isMain = fileIsMainMap.get(file.filename) || 0;
+//       imageMetaList.push({
+//         id: 0,
+//         is_main: isMain,
+//         file: file
+//       });
+//     }
+
+//     console.log("構建的圖片列表:", imageMetaList.map(img => ({
+//       id: img.id,
+//       is_main: img.is_main,
+//       hasFile: !!img.file
+//     })));
+
+//     // 檢查是否至少有一張圖片被設為主圖
+//     const hasMainImage = imageMetaList.some(img => img.is_main === 1);
+//     console.log("是否有設定主圖:", hasMainImage);
+
+//     // 如果沒有主圖，且有圖片，則將第一張圖片設為主圖
+//     if (!hasMainImage && imageMetaList.length > 0) {
+//       imageMetaList[0].is_main = 1;
+//       console.log("未設置主圖，將第一張圖片設為主圖");
+//     }
+
+//     // 清除所有主圖標記 - 只針對當前商品
+//     await db.query("UPDATE product_images SET is_main = 0 WHERE product_id = ?", [id]);
+//     console.log("已清除商品 ID", id, "的所有主圖標記");
+
+//     // 處理每個圖片
+//     let processedCount = 0;
+//     let errorCount = 0;
+
+//     for (const img of imageMetaList) {
+//       try {
+//         if (img.file) {
+//           // 有上傳新圖
+//           const ext = path.extname(img.file.originalname);
+//           const name = path.basename(img.file.filename, path.extname(img.file.filename));
+//           const newFilename = `${name}${ext}`;
+//           const savePath = path.join(uploadDir, newFilename);
+//           const imageUrl = `/upload/images/${newFilename}`;
+
+//           console.log("處理新圖片:");
+//           console.log("- 原始文件名:", img.file.originalname);
+//           console.log("- 臨時路徑:", img.file.path);
+//           console.log("- 目標路徑:", savePath);
+//           console.log("- 數據庫URL:", imageUrl);
+//           console.log("- is_main 值:", img.is_main);  // 記錄 is_main 值
+
+//           // 檢查源文件是否存在
+//           if (!fs.existsSync(img.file.path)) {
+//             console.error("錯誤: 臨時文件不存在:", img.file.path);
+//             errorCount++;
+//             continue;
+//           }
+
+//           // 將檔案從臨時目錄移到目標目錄
+//           fs.renameSync(img.file.path, savePath);
+//           console.log("文件成功移動到:", savePath);
+
+//           // 插入新圖片記錄
+//           const [insertResult] = await db.query(`
+//             INSERT INTO product_images (product_id, image_url, is_main, created_time, update_time)
+//             VALUES (?, ?, ?, ?, ?)`,
+//             [id, imageUrl, img.is_main, date, date]
+//           );
+
+//           console.log("圖片記錄插入成功, ID:", insertResult.insertId, "is_main:", img.is_main);
+//           processedCount++;
+
+//         } else if (img.id > 0) {
+//           // 舊圖片只更新主圖狀態
+//           console.log("更新舊圖片:", img.id, "主圖狀態:", img.is_main);
+
+//           const [updateResult] = await db.query(`
+//             UPDATE product_images
+//             SET is_main = ?, update_time = ?
+//             WHERE id = ? AND product_id = ?`,
+//             [img.is_main, date, img.id, id]
+//           );
+
+//           if (updateResult.affectedRows > 0) {
+//             console.log("圖片狀態更新成功");
+//             processedCount++;
+//           } else {
+//             console.warn("圖片狀態更新失敗，可能圖片ID不存在:", img.id);
+//           }
+//         }
+//       } catch (err) {
+//         console.error("處理圖片時發生錯誤:", err);
+//         errorCount++;
+//       }
+//     }
+
+//     console.log("圖片處理完成 - 成功:", processedCount, "張, 失敗:", errorCount, "張");
+
+//     // 最後確認：如果商品沒有任何主圖，則設置第一張圖片為主圖
+//     const [checkMain] = await db.query(`
+//       SELECT COUNT(*) AS count FROM product_images 
+//       WHERE product_id = ? AND is_main = 1`, [id]);
+
+//     if (checkMain[0].count === 0) {
+//       console.log("最終檢查：商品仍無主圖，設置第一張為主圖");
+//       await db.query(`
+//         UPDATE product_images 
+//         SET is_main = 1 
+//         WHERE product_id = ? 
+//         ORDER BY id ASC 
+//         LIMIT 1`, [id]);
+//     }
+
+//     // ========= 成功回傳 =========
+//     res.success({ id }, "商品更新成功");
+//   } catch (err) {
+//     console.error("商品更新錯誤:", err);
+//     next(err); // 交由全局錯誤中間件處理
+//   }
+// };
+
+
+
+
+
+
+
+
 
 //查全部商品（支援分類條件）
 exports.getProductsByFilter = async (req, res, next) => {
