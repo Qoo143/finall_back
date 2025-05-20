@@ -19,4 +19,7 @@ router.delete('/:id', orderController.deleteOrder);
 // 更新訂單狀態
 router.patch('/:id/status', orderController.updateOrderStatus);
 
+// 取消訂單
+router.patch('/:id/cancel', orderController.cancelOrder);
+
 module.exports = router;

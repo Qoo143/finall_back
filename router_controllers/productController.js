@@ -753,7 +753,8 @@ exports.getProductById = async (req, res, next) => {
       category_id,
       description: product.description || "",
       model_url: product.model_url, // 直接使用products表中的model_url
-      images
+      images,
+      created_time: product.created_time,
     }, "查詢成功");
 
   } catch (err) {
