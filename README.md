@@ -1,12 +1,10 @@
 # QianTa 電商系統 - 後端
 
-> 📖 [返回專案總覽](https://github.com/Qoo143/QianTa)
-
 基於 Express + MySQL 的 RESTful API 服務，提供完整的電商後端功能。
 
 ## 🔗 相關連結
 - **🏠 [專案總覽](https://github.com/Qoo143/QianTa)** - 完整專案說明  
-- **🌐 [前端專案](https://github.com/Qoo143/finall_front)** - 用戶界面
+- **🌐 [前端專案](https://github.com/Qoo143/finall_front)** - 前端原碼
 
 ## ⚡ 快速開始
 
@@ -18,7 +16,7 @@ npm install
 cp .env.example .env
 
 # 啟動服務
-npm start
+node app
 ```
 
 ### 環境變數設定
@@ -43,17 +41,15 @@ JWT_SECRET=your_jwt_secret
 ## 📁 專案結構
 
 ```
-├── router/                # API 路由
-├── router_controllers/    # 業務邏輯
-├── middleware/           # 中間件
-│   ├── auth.js          # JWT 驗證
-│   ├── upload.js        # 檔案上傳
-│   └── errorHandler.js  # 錯誤處理
-├── db/                   # 資料庫
-└── public/uploads/       # 檔案存儲
+├── index.js                 # 應用程式入口點
+├── router/                  # API 路由定義
+├── router_controllers/      # 業務邏輯控制器
+├── middleware/              # 中間件
+├── db/                      # 資料庫相關
+└── public/                  # 靜態檔案存儲
 ```
 
-## 🔌 API 端點
+## 🔌 API 端點(大略)
 
 ### 商品管理
 ```
@@ -72,8 +68,8 @@ POST   /api/login         # 用戶登入
 
 ### 購物車
 ```
-GET    /api/cart          # 獲取購物車
-POST   /api/cart/items    # 加入商品
+GET    /api/cart         # 獲取購物車
+POST   /api/cart/items     # 加入商品
 PATCH  /api/cart/items/:id # 更新數量
 DELETE /api/cart/items/:id # 移除商品
 ```
@@ -85,12 +81,22 @@ POST   /api/orders        # 建立訂單
 PATCH  /api/orders/:id/cancel # 取消訂單
 ```
 
-### 分類與標籤
+### 分類管理
 ```
-GET    /categories        # 分類列表
-POST   /categories        # 新增分類
-GET    /tags              # 標籤列表
-POST   /tags              # 新增標籤
+GET    /categories           # 取得所有分類
+GET    /categories/:id       # 取得單一分類
+POST   /categories           # 新增分類
+PUT    /categories/:id       # 更新分類
+DELETE /categories/:id       # 刪除分類
+```
+
+### 標籤管理
+```
+GET    /tags                 # 取得所有標籤
+POST   /tags                 # 新增單一標籤
+POST   /tags/patch           # 批次新增標籤
+PUT    /tags/:id             # 更新標籤
+DELETE /tags/:id             # 刪除標籤
 ```
 
 ## 🔒 安全機制
@@ -104,12 +110,18 @@ POST   /tags              # 新增標籤
 
 ### 核心資料表
 - `users` - 用戶資料
+- `cart_items` - 購物車號
 - `products` - 商品資料
 - `product_images` - 商品圖片
-- `shopping_carts` - 購物車
-- `orders` - 訂單資料
+- `product_category` - 商品分類表
 - `categories` - 商品分類
+- `product_tag` - 商品標籤關聯表
 - `tags` - 商品標籤
+- `shopping_carts` - 購物車
+
+- `orders` - 訂單資料
+- `order_items` - 訂單明細
+- `shipping_addresses` - 訂單地址
 
 ## 📊 回應格式
 
